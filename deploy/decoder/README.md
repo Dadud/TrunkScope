@@ -5,6 +5,15 @@ address, source center frequency, P25 control channels, and system short name.
 Populate `talkgroups.csv` when a directory export is available; unknown groups
 are recorded during initial discovery.
 
+Before starting the profile, validate the IQ link from the main host:
+
+```bash
+./scripts/main-preflight.sh RECEIVER_LAN_IP
+```
+
+The first test should use one known control channel and a conservative recorder
+count. Increase `digitalRecorders` only after sustained clean receiver metrics.
+
 Run the central decoder profile with all DSP on the main appliance:
 
 ```bash

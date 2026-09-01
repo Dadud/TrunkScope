@@ -17,7 +17,15 @@ SoapySDRUtil --find="remote=RECEIVER_LAN_IP:55132"
 ## SDRplay RSP1B reference node
 
 SDRplay's API is vendor-distributed and is not copied into the public image.
-Install SDRplay API v3.15 or later and SoapySDRPlay3 on the Linux laptop, then:
+On Debian/Ubuntu, install the open-source host tools first:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y soapysdr-tools soapysdr-server libsoapysdr-dev usbutils
+```
+
+Then install SDRplay API v3.15 or later and SoapySDRPlay3 using their Linux
+packages, and run:
 
 ```bash
 lsusb -d 1df7:
