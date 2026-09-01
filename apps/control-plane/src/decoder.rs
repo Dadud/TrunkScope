@@ -178,6 +178,15 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
         talkgrouptag
     };
 
+    let filename = source.filename.value();
+    let audio_path = if filename.is_empty() {
+        None
+    } else if std::path::Path::new(&filename).is_absolute() {
+        Some(filename)
+    } else {
+        Some(format!("/var/lib/trunkscope/calls/{filename}"))
+    };
+
     Some(Call {
         id: call_id,
         system_id,
@@ -211,13 +220,16 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
         transcript: None,
         summary: None,
         location: None,
-        audio: (ended && !encrypted && !source.filename.value().is_empty()).then(|| AudioAsset {
-            object_key: source.filename.value(),
-            content_type: "audio/wav".into(),
-            duration_ms: ended_at
-                .map(|end| (end - started_at).num_milliseconds().max(0) as u64)
-                .unwrap_or(0),
-        }),
+        audio: (ended && !encrypted)
+            .then_some(audio_path)
+            .flatten()
+            .map(|object_key| AudioAsset {
+                object_key,
+                content_type: "audio/wav".into(),
+                duration_ms: ended_at
+                    .map(|end| (end - started_at).num_milliseconds().max(0) as u64)
+                    .unwrap_or(0),
+            }),
     })
 }
 
