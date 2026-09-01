@@ -11,6 +11,15 @@ Before starting the profile, validate the IQ link from the main host:
 ./scripts/main-preflight.sh RECEIVER_LAN_IP
 ```
 
+Then run the Docker-native receiver throughput check:
+
+```bash
+./scripts/hardware-smoke-test.sh RECEIVER_LAN_IP 851012500
+```
+
+It must report `selfTestResult` with `healthy:true` and zero overruns before
+starting Trunk Recorder.
+
 The first test should use one known control channel and a conservative recorder
 count. Increase `digitalRecorders` only after sustained clean receiver metrics.
 
