@@ -135,7 +135,7 @@ fn apply_status(state: &AppState, event: StatusEvent) {
         }
         Some(call) => state.upsert_call(call.clone(), CallEvent::Started(call)),
         None => {
-            warn!(decoder_call_id = %decoder_call.id, "decoder call was missing required identifiers")
+            warn!(decoder_call_id = %decoder_call.id.value(), "decoder call was missing required identifiers")
         }
     }
 }
