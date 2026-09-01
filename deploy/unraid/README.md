@@ -1,4 +1,8 @@
-# TrunkScope on Unraid
+# TrunkScope on Unraid (secondary deployment)
+
+Docker Compose on a standard Linux host is the primary TrunkScope installation
+method. Use this Unraid guide when you want Unraid to own the appliance and its
+storage; it follows the same images, environment variables, and upgrade path.
 
 Unraid is the main appliance: it runs the web UI, control plane, PostgreSQL,
 Trunk Recorder, and optional AI services. The RSP1B remains attached to a Linux
