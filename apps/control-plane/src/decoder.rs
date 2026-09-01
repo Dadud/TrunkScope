@@ -56,15 +56,15 @@ enum StatusEvent {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecoderCall {
-    id: String,
+    id: FlexibleText,
     #[serde(default)]
-    freq: String,
+    freq: FlexibleText,
     #[serde(default)]
-    short_name: String,
+    short_name: FlexibleText,
     #[serde(default)]
-    talkgroup: String,
+    talkgroup: FlexibleText,
     #[serde(default)]
-    talkgrouptag: String,
+    talkgrouptag: FlexibleText,
     #[serde(default)]
     phase2: FlexibleBool,
     #[serde(default)]
@@ -72,13 +72,32 @@ struct DecoderCall {
     #[serde(default)]
     analog: FlexibleBool,
     #[serde(default)]
-    start_time: String,
+    start_time: FlexibleText,
     #[serde(default)]
-    stop_time: String,
+    stop_time: FlexibleText,
     #[serde(default)]
-    src_num: String,
+    src_num: FlexibleText,
     #[serde(default)]
-    filename: String,
+    filename: FlexibleText,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(untagged)]
+enum FlexibleText {
+    String(String),
+    Number(serde_json::Number),
+    #[default]
+    Missing,
+}
+
+impl FlexibleText {
+    fn value(&self) -> String {
+        match self {
+            Self::String(value) => value.clone(),
+            Self::Number(value) => value.to_string(),
+            Self::Missing => String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -122,19 +141,23 @@ fn apply_status(state: &AppState, event: StatusEvent) {
 }
 
 fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<Call> {
-    let talkgroup_id = parse_u32(&source.talkgroup)?;
-    let frequency_hz = source.freq.parse::<f64>().ok()?.round() as u64;
+    let source_id = source.id.value();
+    let talkgroup = source.talkgroup.value();
+    let frequency = source.freq.value();
+    let talkgroup_id = parse_u32(&talkgroup)?;
+    let frequency_hz = frequency.parse::<f64>().ok()?.round() as u64;
     let call_id = {
         let mut calls = state
             .decoder_calls
             .write()
             .expect("decoder call lock poisoned");
-        *calls.entry(source.id.clone()).or_insert_with(Uuid::new_v4)
+        *calls.entry(source_id).or_insert_with(Uuid::new_v4)
     };
-    let system_name = if source.short_name.is_empty() {
+    let short_name = source.short_name.value();
+    let system_name = if short_name.is_empty() {
         "P25 system".to_string()
     } else {
-        source.short_name.clone()
+        short_name
     };
     let system_id = {
         let mut systems = state
@@ -145,13 +168,14 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
             .entry(system_name.clone())
             .or_insert_with(Uuid::new_v4)
     };
-    let started_at = parse_epoch(&source.start_time).unwrap_or_else(Utc::now);
-    let ended_at = ended.then(|| parse_epoch(&source.stop_time).unwrap_or_else(Utc::now));
+    let started_at = parse_epoch(&source.start_time.value()).unwrap_or_else(Utc::now);
+    let ended_at = ended.then(|| parse_epoch(&source.stop_time.value()).unwrap_or_else(Utc::now));
     let encrypted = source.encrypted.value();
-    let talkgroup_label = if source.talkgrouptag.is_empty() {
+    let talkgrouptag = source.talkgrouptag.value();
+    let talkgroup_label = if talkgrouptag.is_empty() {
         format!("Talkgroup {talkgroup_id}")
     } else {
-        source.talkgrouptag.clone()
+        talkgrouptag
     };
 
     Some(Call {
@@ -170,7 +194,7 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
         },
         frequency_hz,
         tdma_slot: source.phase2.value().then_some(0),
-        source_radio_id: parse_u32(&source.src_num),
+        source_radio_id: parse_u32(&source.src_num.value()),
         started_at,
         ended_at,
         state: if ended {
@@ -187,8 +211,8 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
         transcript: None,
         summary: None,
         location: None,
-        audio: (ended && !encrypted && !source.filename.is_empty()).then(|| AudioAsset {
-            object_key: source.filename.clone(),
+        audio: (ended && !encrypted && !source.filename.value().is_empty()).then(|| AudioAsset {
+            object_key: source.filename.value(),
             content_type: "audio/wav".into(),
             duration_ms: ended_at
                 .map(|end| (end - started_at).num_milliseconds().max(0) as u64)
@@ -234,5 +258,18 @@ mod tests {
         let calls = state.calls.read().unwrap();
         assert_eq!(calls[0].encryption, EncryptionState::Encrypted);
         assert!(calls[0].audio.is_none());
+    }
+
+    #[test]
+    fn accepts_numeric_trunk_recorder_fields() {
+        let state = AppState::new();
+        let event: StatusEvent = serde_json::from_str(
+            r#"{"type":"call_start","call":{"id":42,"freq":851012500,"shortName":"Metro","talkgroup":1001,"phase2":false,"startTime":1515575009}}"#,
+        )
+        .unwrap();
+        apply_status(&state, event);
+        let calls = state.calls.read().unwrap();
+        assert_eq!(calls[0].frequency_hz, 851012500);
+        assert_eq!(calls[0].talkgroup_id, 1001);
     }
 }
