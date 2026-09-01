@@ -284,4 +284,19 @@ mod tests {
         assert_eq!(calls[0].frequency_hz, 851012500);
         assert_eq!(calls[0].talkgroup_id, 1001);
     }
+
+    #[test]
+    fn resolves_relative_audio_filename_into_decoder_volume() {
+        let state = AppState::new();
+        let event: StatusEvent = serde_json::from_str(
+            r#"{"type":"call_end","call":{"id":"call-3","freq":"851012500","talkgroup":"1001","startTime":"1515575009","stopTime":"1515575018","filename":"2026-09-01/call-3.wav"}}"#,
+        )
+        .unwrap();
+        apply_status(&state, event);
+        let calls = state.calls.read().unwrap();
+        assert_eq!(
+            calls[0].audio.as_ref().unwrap().object_key,
+            "/var/lib/trunkscope/calls/2026-09-01/call-3.wav"
+        );
+    }
 }
