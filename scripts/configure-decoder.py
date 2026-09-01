@@ -11,13 +11,14 @@ def main() -> None:
     parser.add_argument("control_channels", nargs="+", type=int)
     parser.add_argument("--system", default="local-p25")
     parser.add_argument("--port", type=int, default=55132)
+    parser.add_argument("--device", help="full SDR device string for a locally attached SDR")
     parser.add_argument("--output", type=Path, default=Path("deploy/decoder/config.json"))
     args = parser.parse_args()
 
     example = Path("deploy/decoder/config.example.json")
     config = json.loads(example.read_text(encoding="utf-8"))
     source = config["sources"][0]
-    source["device"] = (
+    source["device"] = args.device or (
         "soapy=0,driver=remote,remote=tcp://"
         f"{args.receiver_ip}:{args.port},remote:driver=sdrplay,remote:format=CS16"
     )

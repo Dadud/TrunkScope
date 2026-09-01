@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: ${TRUNKSCOPE_POSTGRES_USER:-trunkscope}
       POSTGRES_PASSWORD: ${TRUNKSCOPE_POSTGRES_PASSWORD:-change-me-before-exposing}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ${TRUNKSCOPE_POSTGRES_DATA:-postgres-data}:/var/lib/postgresql/data
       - ../migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -24,7 +24,7 @@ services:
       MINIO_ROOT_USER: ${TRUNKSCOPE_MINIO_USER:-trunkscope}
       MINIO_ROOT_PASSWORD: ${TRUNKSCOPE_MINIO_PASSWORD:-change-me-before-exposing}
     volumes:
-      - minio-data:/data
+      - ${TRUNKSCOPE_MINIO_DATA:-minio-data}:/data
     restart: unless-stopped
 
   control-plane:
@@ -54,8 +54,10 @@ services:
       TRUNKSCOPE_PUBLIC_FEED: "false"
       RUST_LOG: ${RUST_LOG:-trunkscope=info,tower_http=info}
     volumes:
-      - audio-data:/var/lib/trunkscope/audio
-      - calls-data:/var/lib/trunkscope/calls:ro
+      - ${TRUNKSCOPE_AUDIO_DATA:-audio-data}:/var/lib/trunkscope/audio
+      - ${TRUNKSCOPE_CALLS_DATA:-calls-data}:/var/lib/trunkscope/calls:ro
+    devices:
+      - ${TRUNKSCOPE_USB_DEVICES:-/dev/bus/usb:/dev/bus/usb}
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,6 +85,8 @@ services:
       context: ..
       dockerfile: native/radiod/Dockerfile
     command: ["--list-devices"]
+    devices:
+      - ${TRUNKSCOPE_USB_DEVICES:-/dev/bus/usb:/dev/bus/usb}
 
   decoder:
     profiles: ["decoder"]
@@ -90,7 +94,9 @@ services:
     command: ["trunk-recorder", "--config=/config/config.json"]
     volumes:
       - ./decoder:/config:ro
-      - calls-data:/var/lib/trunkscope/calls
+      - ${TRUNKSCOPE_CALLS_DATA:-calls-data}:/var/lib/trunkscope/calls
+    devices:
+      - ${TRUNKSCOPE_USB_DEVICES:-/dev/bus/usb:/dev/bus/usb}
     depends_on:
       control-plane:
         condition: service_healthy
@@ -100,14 +106,14 @@ services:
     profiles: ["ai"]
     image: ghcr.io/speaches-ai/speaches:latest-cpu
     volumes:
-      - huggingface-cache:/home/ubuntu/.cache/huggingface/hub
+      - ${TRUNKSCOPE_HUGGINGFACE_DATA:-huggingface-cache}:/home/ubuntu/.cache/huggingface/hub
     restart: unless-stopped
 
   ollama:
     profiles: ["ai"]
     image: ollama/ollama:latest
     volumes:
-      - ollama-data:/root/.ollama
+      - ${TRUNKSCOPE_OLLAMA_DATA:-ollama-data}:/root/.ollama
     restart: unless-stopped
 
 volumes:
