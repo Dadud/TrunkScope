@@ -1,7 +1,17 @@
 # Central decoder configuration
 
-Copy `config.example.json` to `config.json`, then replace the receiver-node LAN
-address, source center frequency, P25 control channels, and system short name.
+Generate `config.json` from the example after you know the receiver address and
+control channels:
+
+```bash
+python3 scripts/configure-decoder.py RECEIVER_LAN_IP 851012500 851512500 \
+  --system "my-p25-site"
+```
+
+The first channel is used as the source center frequency; the full list is
+written to the P25 system. You can also copy `config.example.json` manually and
+replace those same fields. Populate `talkgroups.csv` when a directory export is
+available; unknown groups are recorded during initial discovery.
 Populate `talkgroups.csv` when a directory export is available; unknown groups
 are recorded during initial discovery.
 
