@@ -1,0 +1,13 @@
+/target
+/node_modules
+/.pnpm-store
+/.env
+/data
+**/dist
+*.tsbuildinfo
+apps/web/vite.config.js
+apps/web/vite.config.d.ts
+*.log
+.DS_Store
+.idea
+.vscode

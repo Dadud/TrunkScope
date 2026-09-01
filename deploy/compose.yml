@@ -1,0 +1,119 @@
+name: trunkscope
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${TRUNKSCOPE_POSTGRES_DB:-trunkscope}
+      POSTGRES_USER: ${TRUNKSCOPE_POSTGRES_USER:-trunkscope}
+      POSTGRES_PASSWORD: ${TRUNKSCOPE_POSTGRES_PASSWORD:-change-me-before-exposing}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${TRUNKSCOPE_MINIO_USER:-trunkscope}
+      MINIO_ROOT_PASSWORD: ${TRUNKSCOPE_MINIO_PASSWORD:-change-me-before-exposing}
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  control-plane:
+    build:
+      context: ..
+      dockerfile: apps/control-plane/Dockerfile
+    environment:
+      TRUNKSCOPE_BIND: 0.0.0.0:8080
+      TRUNKSCOPE_DATABASE_URL: postgresql://${TRUNKSCOPE_POSTGRES_USER:-trunkscope}:${TRUNKSCOPE_POSTGRES_PASSWORD:-change-me-before-exposing}@postgres:5432/${TRUNKSCOPE_POSTGRES_DB:-trunkscope}
+      TRUNKSCOPE_STORAGE_PATH: /var/lib/trunkscope/audio
+      TRUNKSCOPE_SIMULATOR: ${TRUNKSCOPE_SIMULATOR:-true}
+      TRUNKSCOPE_RADIO_MODE: ${TRUNKSCOPE_RADIO_MODE:-simulator}
+      TRUNKSCOPE_RADIOD_PATH: /usr/local/bin/trunkscope-radiod
+      TRUNKSCOPE_RADIO_DEVICE: ${TRUNKSCOPE_RADIO_DEVICE:-}
+      TRUNKSCOPE_RADIO_FREQUENCY_HZ: ${TRUNKSCOPE_RADIO_FREQUENCY_HZ:-0}
+      TRUNKSCOPE_RADIO_SAMPLE_RATE_HZ: ${TRUNKSCOPE_RADIO_SAMPLE_RATE_HZ:-2400000}
+      TRUNKSCOPE_RADIO_BANDWIDTH_HZ: ${TRUNKSCOPE_RADIO_BANDWIDTH_HZ:-}
+      TRUNKSCOPE_RADIO_GAIN_DB: ${TRUNKSCOPE_RADIO_GAIN_DB:-}
+      TRUNKSCOPE_RADIO_AGC: ${TRUNKSCOPE_RADIO_AGC:-false}
+      TRUNKSCOPE_RADIO_PPM: ${TRUNKSCOPE_RADIO_PPM:-0}
+      TRUNKSCOPE_CALLS_PATH: /var/lib/trunkscope/calls
+      TRUNKSCOPE_AI_ENABLED: ${TRUNKSCOPE_AI_ENABLED:-false}
+      TRUNKSCOPE_TRANSCRIBE_URL: ${TRUNKSCOPE_TRANSCRIBE_URL:-http://speaches:8000/v1/audio/transcriptions}
+      TRUNKSCOPE_TRANSCRIBE_MODEL: ${TRUNKSCOPE_TRANSCRIBE_MODEL:-Systran/faster-distil-whisper-small.en}
+      TRUNKSCOPE_SUMMARY_URL: ${TRUNKSCOPE_SUMMARY_URL:-http://ollama:11434/api/generate}
+      TRUNKSCOPE_SUMMARY_MODEL: ${TRUNKSCOPE_SUMMARY_MODEL:-llama3.2:3b}
+      TRUNKSCOPE_PUBLIC_FEED: "false"
+      RUST_LOG: ${RUST_LOG:-trunkscope=info,tower_http=info}
+    volumes:
+      - audio-data:/var/lib/trunkscope/audio
+      - calls-data:/var/lib/trunkscope/calls:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "${TRUNKSCOPE_HTTP_PORT:-8088}:80"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    restart: unless-stopped
+
+  radiod-tools:
+    profiles: ["radio-tools"]
+    build:
+      context: ..
+      dockerfile: native/radiod/Dockerfile
+    command: ["--list-devices"]
+
+  decoder:
+    profiles: ["decoder"]
+    image: ${TRUNKSCOPE_DECODER_IMAGE:-robotastic/trunk-recorder:latest}
+    command: ["trunk-recorder", "--config=/config/config.json"]
+    volumes:
+      - ./decoder:/config:ro
+      - calls-data:/var/lib/trunkscope/calls
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    restart: unless-stopped
+
+  speaches:
+    profiles: ["ai"]
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    volumes:
+      - huggingface-cache:/home/ubuntu/.cache/huggingface/hub
+    restart: unless-stopped
+
+  ollama:
+    profiles: ["ai"]
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  minio-data:
+  audio-data:
+  calls-data:
+  huggingface-cache:
+  ollama-data:

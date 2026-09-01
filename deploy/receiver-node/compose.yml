@@ -1,0 +1,11 @@
+name: trunkscope-receiver
+services:
+  soapy-remote:
+    build:
+      context: ../..
+      dockerfile: deploy/receiver-node/Dockerfile
+    network_mode: host
+    privileged: true
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+    restart: unless-stopped

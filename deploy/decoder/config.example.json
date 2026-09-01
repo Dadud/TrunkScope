@@ -1,0 +1,32 @@
+{
+  "ver": 2,
+  "captureDir": "/var/lib/trunkscope/calls",
+  "statusServer": "ws://control-plane:8080/api/v1/decoder/status",
+  "audioArchive": true,
+  "callLog": true,
+  "softVocoder": true,
+  "sources": [
+    {
+      "center": 851012500,
+      "rate": 2400000,
+      "error": 0,
+      "gain": 0,
+      "digitalRecorders": 4,
+      "analogRecorders": 2,
+      "driver": "osmosdr",
+      "device": "soapy=0,driver=remote,remote=tcp://192.168.1.50:55132,remote:driver=sdrplay,remote:format=CS16"
+    }
+  ],
+  "systems": [
+    {
+      "type": "p25",
+      "shortName": "replace-me",
+      "control_channels": [851012500],
+      "talkgroupsFile": "/config/talkgroups.csv",
+      "modulation": "qpsk",
+      "squelch": -60,
+      "recordUnknown": true,
+      "hideEncrypted": false
+    }
+  ]
+}

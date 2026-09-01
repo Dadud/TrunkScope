@@ -1,0 +1,26 @@
+syntax = "proto3";
+package trunkscope.radiod.v1;
+service RadioService {
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
+  rpc ConfigureDevice(ConfigureDeviceRequest) returns (OperationResult);
+  rpc StartSystem(StartSystemRequest) returns (OperationResult);
+  rpc StopSystem(StopSystemRequest) returns (OperationResult);
+  rpc HoldTalkgroup(HoldTalkgroupRequest) returns (OperationResult);
+  rpc StreamEvents(StreamEventsRequest) returns (stream RadioEvent);
+}
+message ListDevicesRequest {}
+message StreamEventsRequest { uint64 after_sequence = 1; }
+message Device { string id = 1; string driver = 2; string label = 3; string serial = 4; uint64 minimum_frequency_hz = 5; uint64 maximum_frequency_hz = 6; repeated uint32 sample_rates_hz = 7; }
+message ListDevicesResponse { repeated Device devices = 1; }
+message ConfigureDeviceRequest { string device_id = 1; uint64 center_frequency_hz = 2; uint32 sample_rate_hz = 3; float gain_db = 4; float ppm = 5; uint64 expected_revision = 6; }
+message StartSystemRequest { string system_id = 1; uint64 expected_revision = 2; }
+message StopSystemRequest { string system_id = 1; }
+message HoldTalkgroupRequest { string system_id = 1; uint32 talkgroup_id = 2; bool enabled = 3; }
+message OperationResult { bool accepted = 1; string reason = 2; uint64 revision = 3; }
+message RadioEvent { uint64 sequence = 1; string occurred_at = 2; oneof payload { ReceiverMetric receiver_metric = 3; ControlMessage control_message = 4; CallStarted call_started = 5; AudioFrame audio_frame = 6; CallEnded call_ended = 7; DecoderFault decoder_fault = 8; } }
+message ReceiverMetric { string receiver_id = 1; float signal_dbfs = 2; float noise_dbfs = 3; float frequency_error_hz = 4; uint64 dropped_samples = 5; }
+message ControlMessage { string system_id = 1; string site_id = 2; string opcode = 3; bytes raw = 4; }
+message CallStarted { string call_id = 1; string system_id = 2; string site_id = 3; uint32 talkgroup_id = 4; uint64 frequency_hz = 5; optional uint32 tdma_slot = 6; optional uint32 source_radio_id = 7; bool encrypted = 8; }
+message AudioFrame { string call_id = 1; uint64 presentation_time_ms = 2; uint32 sample_rate_hz = 3; bytes pcm_s16le = 4; }
+message CallEnded { string call_id = 1; string reason = 2; uint64 duration_ms = 3; }
+message DecoderFault { string receiver_id = 1; string code = 2; string detail = 3; bool recoverable = 4; }

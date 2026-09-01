@@ -1,0 +1,31 @@
+# TrunkScope receiver node
+
+A receiver node owns an SDR and forwards IQ to the main TrunkScope appliance. It
+performs no P25/NFM decoding, recording, transcription, geocoding, or summaries.
+
+The initial transport is SoapyRemote on TCP/UDP port `55132`. It has no built-in
+authentication or encryption. Bind it only to a trusted LAN address; use a VPN
+instead when crossing networks, and never port-forward it from the internet.
+
+## RTL-SDR and Airspy on Linux
+
+```bash
+docker compose -f deploy/receiver-node/compose.yml up -d --build
+SoapySDRUtil --find="remote=RECEIVER_LAN_IP:55132"
+```
+
+## SDRplay RSP1B reference node
+
+SDRplay's API is vendor-distributed and is not copied into the public image.
+Install SDRplay API v3.15 or later and SoapySDRPlay3 on the Linux laptop, then:
+
+```bash
+lsusb -d 1df7:
+SoapySDRUtil --find="driver=sdrplay"
+SoapySDRUtil --probe="driver=sdrplay"
+SoapySDRServer --bind="RECEIVER_LAN_IP:55132"
+```
+
+The probe must report hardware key `RSP1B`. On the main appliance, the remote
+device is addressed as
+`driver=remote,remote=tcp://RECEIVER_LAN_IP:55132,remote:driver=sdrplay,remote:format=CS16`.
