@@ -53,6 +53,8 @@ LAN or VPN and never expose it directly to the internet.
 - Audio defaults to 30-day retention; metadata defaults to 365 days.
 
 See [docs/architecture.md](docs/architecture.md) and [docs/development.md](docs/development.md).
+If Docker Desktop cannot start its Linux engine, see
+[docs/docker-troubleshooting.md](docs/docker-troubleshooting.md).
 
 ## License
 
