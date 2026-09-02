@@ -53,9 +53,12 @@ services:
       TRUNKSCOPE_SUMMARY_MODEL: ${TRUNKSCOPE_SUMMARY_MODEL:-llama3.2:3b}
       TRUNKSCOPE_PUBLIC_FEED: "false"
       RUST_LOG: ${RUST_LOG:-trunkscope=info,tower_http=info}
+      LD_LIBRARY_PATH: /opt/sdrplay/lib
+      SOAPY_SDR_PLUGIN_PATH: /opt/sdrplay/lib/SoapySDR/modules0.8
     volumes:
       - ${TRUNKSCOPE_AUDIO_DATA:-audio-data}:/var/lib/trunkscope/audio
       - ${TRUNKSCOPE_CALLS_DATA:-calls-data}:/var/lib/trunkscope/calls:ro
+      - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
     devices:
       - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
     depends_on:
@@ -87,6 +90,11 @@ services:
     command: ["--list-devices"]
     devices:
       - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
+    volumes:
+      - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
+    environment:
+      LD_LIBRARY_PATH: /opt/sdrplay/lib
+      SOAPY_SDR_PLUGIN_PATH: /opt/sdrplay/lib/SoapySDR/modules0.8
 
   decoder:
     profiles: ["decoder"]
