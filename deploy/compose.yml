@@ -57,7 +57,7 @@ services:
       - ${TRUNKSCOPE_AUDIO_DATA:-audio-data}:/var/lib/trunkscope/audio
       - ${TRUNKSCOPE_CALLS_DATA:-calls-data}:/var/lib/trunkscope/calls:ro
     devices:
-      - ${TRUNKSCOPE_USB_DEVICES:-/dev/bus/usb:/dev/bus/usb}
+      - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,7 +86,7 @@ services:
       dockerfile: native/radiod/Dockerfile
     command: ["--list-devices"]
     devices:
-      - ${TRUNKSCOPE_USB_DEVICES:-/dev/bus/usb:/dev/bus/usb}
+      - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
 
   decoder:
     profiles: ["decoder"]
@@ -96,7 +96,7 @@ services:
       - ./decoder:/config:ro
       - ${TRUNKSCOPE_CALLS_DATA:-calls-data}:/var/lib/trunkscope/calls
     devices:
-      - ${TRUNKSCOPE_USB_DEVICES:-/dev/bus/usb:/dev/bus/usb}
+      - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
     depends_on:
       control-plane:
         condition: service_healthy

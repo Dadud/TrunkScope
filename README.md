@@ -14,7 +14,7 @@ This repository currently contains the first executable vertical slice:
 
 ## Quick start
 
-Requirements: Rust 1.85+, Node 22+, pnpm 10+, and Docker for the appliance path.
+Requirements: Rust 1.88+, Node 22+, pnpm 10+, and Docker for the appliance path.
 
 Docker Compose on a Linux host is the primary supported installation method. It
 works on a standard Linux server, mini-PC, or VM and is the reference path for

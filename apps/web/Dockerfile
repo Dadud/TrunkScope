@@ -3,7 +3,7 @@ RUN corepack enable
 WORKDIR /source
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --filter @trunkscope/web...
 COPY apps/web apps/web
 RUN pnpm --filter @trunkscope/web build
 

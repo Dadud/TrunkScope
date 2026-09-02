@@ -1,7 +1,7 @@
 FROM ubuntu:24.04 AS build
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake g++ libsoapysdr-dev \
+    && apt-get install -y --no-install-recommends cmake make g++ libsoapysdr-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /source
 COPY native/radiod/CMakeLists.txt ./

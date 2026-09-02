@@ -318,7 +318,7 @@ int hardware_stream(const Options& options) {
 
   const int activation = device->activateStream(stream);
   if (activation != 0) {
-    throw std::runtime_error("activateStream failed: " + SoapySDR::errToStr(activation));
+    throw std::runtime_error(std::string("activateStream failed: ") + SoapySDR::errToStr(activation));
   }
   guard.active = true;
 
@@ -345,7 +345,7 @@ int hardware_stream(const Options& options) {
       ++total.overflows;
       ++interval.overflows;
     } else {
-      throw std::runtime_error("readStream failed: " + SoapySDR::errToStr(received));
+      throw std::runtime_error(std::string("readStream failed: ") + SoapySDR::errToStr(received));
     }
     if (Clock::now() >= next_metric) {
       emit_metric(++sequence, interval, total, actual_rate);
