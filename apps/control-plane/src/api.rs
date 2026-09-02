@@ -129,7 +129,11 @@ async fn save_system(
     State(state): State<Arc<AppState>>,
     Json(mut profile): Json<SystemProfile>,
 ) -> (StatusCode, Json<SystemProfile>) {
-    if profile.name.trim().is_empty() || profile.control_channel_hz == 0 {
+    let is_p25 = profile.protocol.starts_with("p25");
+    if profile.name.trim().is_empty()
+        || (is_p25 && profile.control_channel_hz.unwrap_or_default() == 0)
+        || (!is_p25 && profile.frequency_hz.unwrap_or_default() == 0)
+    {
         return (StatusCode::BAD_REQUEST, Json(profile));
     }
     if profile.id.is_nil() {

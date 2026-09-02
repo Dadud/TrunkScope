@@ -1,4 +1,4 @@
-export const formatFrequency = (hz: number): string => `${(hz / 1_000_000).toFixed(4)} MHz`;
+export const formatFrequency = (hz?: number): string => hz ? `${(hz / 1_000_000).toFixed(4)} MHz` : "—";
 
 export function formatElapsed(startedAt: string, endedAt?: string): string {
   const end = endedAt ? new Date(endedAt).getTime() : Date.now();

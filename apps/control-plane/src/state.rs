@@ -13,8 +13,13 @@ pub struct SystemProfile {
     pub id: uuid::Uuid,
     pub name: String,
     pub protocol: String,
-    pub control_channel_hz: u64,
+    pub control_channel_hz: Option<u64>,
     pub nac: Option<u32>,
+    pub frequency_hz: Option<u64>,
+    pub bandwidth_hz: Option<u32>,
+    pub modulation: Option<String>,
+    pub squelch_db: Option<f32>,
+    pub tone: Option<String>,
 }
 
 pub const MAX_RECENT_CALLS: usize = 200;
