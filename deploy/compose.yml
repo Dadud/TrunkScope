@@ -101,6 +101,7 @@ services:
   sdrplay-service:
     profiles: ["radio"]
     image: ${TRUNKSCOPE_CONTROL_PLANE_IMAGE:-trunkscope-control-plane:latest}
+    user: "0:0"
     entrypoint: ["/opt/sdrplay/sdrplay_apiService"]
     volumes:
       - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
