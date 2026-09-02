@@ -3,11 +3,11 @@ use std::{sync::Arc, time::Instant};
 use axum::{
     Json, Router,
     extract::{
-        Query, State, WebSocketUpgrade,
+        Path, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::get,
 };
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/snapshot", get(snapshot))
         .route("/api/v1/receivers", get(receivers))
         .route("/api/v1/calls", get(calls))
+        .route("/api/v1/audio/{id}", get(audio))
         .route("/api/v1/policies/public", get(public_policy))
         .route("/api/v1/systems", get(systems).post(save_system))
         .route("/api/v1/live", get(live))
@@ -109,6 +110,48 @@ async fn calls(
             .cloned()
             .collect(),
     )
+}
+
+async fn audio(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let expected = std::env::var("TRUNKSCOPE_AUDIO_TOKEN").unwrap_or_default();
+    let provided = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if expected.is_empty() || provided != format!("Bearer {expected}") {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(asset) = state.calls.read().ok().and_then(|calls| {
+        calls
+            .iter()
+            .find(|call| call.id == id)
+            .and_then(|call| call.audio.clone())
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let root = std::path::PathBuf::from(
+        std::env::var("TRUNKSCOPE_CALLS_PATH")
+            .unwrap_or_else(|_| "/var/lib/trunkscope/calls".into()),
+    );
+    let relative = asset
+        .object_key
+        .trim_start_matches("/var/lib/trunkscope/calls/");
+    let path = root.join(relative);
+    if !path.starts_with(&root) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tokio::fs::read(path).await {
+        Ok(bytes) => (
+            [(axum::http::header::CONTENT_TYPE, asset.content_type)],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn public_policy(State(state): State<Arc<AppState>>) -> Json<PublicationPolicy> {

@@ -36,6 +36,7 @@ export interface Call {
   transcript?: string;
   summary?: string;
   location?: { label: string; latitude: number; longitude: number; confidence: number };
+  audio?: { objectKey: string; contentType: string; durationMs: number };
 }
 
 export interface PublicationPolicy {

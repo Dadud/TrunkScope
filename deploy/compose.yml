@@ -52,6 +52,7 @@ services:
       TRUNKSCOPE_SUMMARY_URL: ${TRUNKSCOPE_SUMMARY_URL:-http://ollama:11434/api/generate}
       TRUNKSCOPE_SUMMARY_MODEL: ${TRUNKSCOPE_SUMMARY_MODEL:-llama3.2:3b}
       TRUNKSCOPE_PUBLIC_FEED: "false"
+      TRUNKSCOPE_AUDIO_TOKEN: ${TRUNKSCOPE_AUDIO_TOKEN:-}
       RUST_LOG: ${RUST_LOG:-trunkscope=info,tower_http=info}
       LD_LIBRARY_PATH: /opt/sdrplay/lib
       SOAPY_SDR_PLUGIN_PATH: /opt/sdrplay/lib/SoapySDR/modules0.8
