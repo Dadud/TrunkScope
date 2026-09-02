@@ -264,4 +264,13 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
     }
+
+    #[tokio::test]
+    async fn audio_requires_bearer_token() {
+        let response = router(Arc::new(AppState::new()))
+            .oneshot(Request::get(format!("/api/v1/audio/{}", uuid::Uuid::new_v4())).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
 }
