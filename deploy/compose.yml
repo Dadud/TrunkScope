@@ -61,6 +61,7 @@ services:
       - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
     devices:
       - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
+    ipc: host
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,11 +91,25 @@ services:
     command: ["--list-devices"]
     devices:
       - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
+    ipc: host
     volumes:
       - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
     environment:
       LD_LIBRARY_PATH: /opt/sdrplay/lib
       SOAPY_SDR_PLUGIN_PATH: /opt/sdrplay/lib/SoapySDR/modules0.8
+
+  sdrplay-service:
+    profiles: ["radio"]
+    image: ${TRUNKSCOPE_CONTROL_PLANE_IMAGE:-trunkscope-control-plane:latest}
+    entrypoint: ["/opt/sdrplay/sdrplay_apiService"]
+    volumes:
+      - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
+    devices:
+      - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
+    ipc: host
+    environment:
+      LD_LIBRARY_PATH: /opt/sdrplay/lib
+    restart: unless-stopped
 
   decoder:
     profiles: ["decoder"]
