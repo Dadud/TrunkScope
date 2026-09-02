@@ -52,7 +52,7 @@ export default function App() {
         <div><p className="eyebrow">MONITORING</p><h1>Live console</h1></div>
         <div className={`connection ${connected ? "online" : ""}`}><i />{connected ? "RF LINK ONLINE" : "CONNECTING"}</div>
       </header>
-      {error && <div className="notice">API unavailable: {error}. Start the Rust control plane to receive simulated traffic.</div>}
+      {error && <div className="notice">API unavailable: {error}. Check the control-plane container and receiver connection.</div>}
 
       <section className="metrics">
         <article><small>ACTIVE CALLS</small><strong>{active.length.toString().padStart(2, "0")}</strong><span className="lime">Live now</span></article>
@@ -75,7 +75,7 @@ export default function App() {
             <div className="call-facts"><span><small>FREQUENCY</small>{formatFrequency(selectedCall.frequencyHz)}</span><span><small>TALKGROUP</small>{selectedCall.talkgroupId}</span><span><small>DURATION</small>{formatElapsed(selectedCall.startedAt, selectedCall.endedAt)}</span></div>
             <div className="transcript"><small>TRANSCRIPT</small><p>{selectedCall.transcript ?? "Listening… transcription will appear when the call completes."}</p>{selectedCall.summary && <blockquote>{selectedCall.summary}</blockquote>}</div>
             <div className="controls"><button className="round">Ⅱ</button><div className="timeline"><i style={{ width: selectedCall.state === "active" ? "64%" : "100%" }} /></div><button className="outline">HOLD TG</button><button className="outline">SKIP</button></div>
-          </> : <div className="empty-state">The receiver is quiet. Live calls will appear here.</div>}
+          </> : <div className="empty-state">{receiver ? "RSP1B is receiving. Decoded calls will appear here when trunking is enabled." : "No receiver connected. Live calls will appear here when a radio is online."}</div>}
         </div>
       </section>
 

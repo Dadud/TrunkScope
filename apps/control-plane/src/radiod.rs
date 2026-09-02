@@ -68,6 +68,7 @@ where
 {
     env::var(name)
         .ok()
+        .filter(|value| !value.trim().is_empty())
         .map(|value| {
             value
                 .parse()
