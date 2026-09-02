@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use trunkscope_domain::{Call, PublicationPolicy, Receiver};
 
-use crate::state::AppState;
+use crate::state::{AppState, SystemProfile};
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -23,6 +23,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/receivers", get(receivers))
         .route("/api/v1/calls", get(calls))
         .route("/api/v1/policies/public", get(public_policy))
+        .route("/api/v1/systems", get(systems).post(save_system))
         .route("/api/v1/live", get(live))
         .route("/api/v1/decoder/status", get(crate::decoder::status_socket))
         .with_state(state)
@@ -118,6 +119,27 @@ async fn public_policy(State(state): State<Arc<AppState>>) -> Json<PublicationPo
             .expect("policy lock poisoned")
             .clone(),
     )
+}
+
+async fn systems(State(state): State<Arc<AppState>>) -> Json<Vec<SystemProfile>> {
+    Json(state.systems.read().expect("systems lock poisoned").clone())
+}
+
+async fn save_system(
+    State(state): State<Arc<AppState>>,
+    Json(mut profile): Json<SystemProfile>,
+) -> (StatusCode, Json<SystemProfile>) {
+    if profile.id.is_nil() {
+        profile.id = uuid::Uuid::new_v4();
+    }
+    profile.name = profile.name.trim().to_string();
+    let mut systems = state.systems.write().expect("systems lock poisoned");
+    if let Some(existing) = systems.iter_mut().find(|item| item.id == profile.id) {
+        *existing = profile.clone();
+    } else {
+        systems.push(profile.clone());
+    }
+    (StatusCode::CREATED, Json(profile))
 }
 
 async fn live(upgrade: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {

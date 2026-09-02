@@ -6,12 +6,23 @@ use std::{
 use tokio::sync::broadcast;
 use trunkscope_domain::{Call, CallEvent, PublicationPolicy, Receiver};
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemProfile {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub protocol: String,
+    pub control_channel_hz: u64,
+    pub nac: Option<u32>,
+}
+
 pub const MAX_RECENT_CALLS: usize = 200;
 
 pub struct AppState {
     pub receivers: RwLock<Vec<Receiver>>,
     pub calls: RwLock<VecDeque<Call>>,
     pub public_policy: RwLock<PublicationPolicy>,
+    pub systems: RwLock<Vec<SystemProfile>>,
     pub decoder_calls: RwLock<HashMap<String, uuid::Uuid>>,
     pub decoder_systems: RwLock<HashMap<String, uuid::Uuid>>,
     pub events: broadcast::Sender<CallEvent>,
@@ -26,6 +37,7 @@ impl AppState {
             receivers: RwLock::new(Vec::new()),
             calls: RwLock::new(VecDeque::new()),
             public_policy: RwLock::new(PublicationPolicy::default()),
+            systems: RwLock::new(Vec::new()),
             decoder_calls: RwLock::new(HashMap::new()),
             decoder_systems: RwLock::new(HashMap::new()),
             events,
