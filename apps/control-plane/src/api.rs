@@ -23,6 +23,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/auth/login",
             axum::routing::post(crate::auth::login),
         )
+        .route("/api/v1/auth/status", get(crate::auth::status))
         .route("/api/v1/auth/me", get(crate::auth::me))
         .route(
             "/api/v1/auth/logout",

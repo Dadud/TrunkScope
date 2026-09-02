@@ -22,6 +22,17 @@ pub struct SessionResponse {
     pub role: &'static str,
 }
 
+#[derive(Serialize)]
+pub struct AuthStatus {
+    pub enabled: bool,
+}
+
+pub async fn status() -> Json<AuthStatus> {
+    Json(AuthStatus {
+        enabled: std::env::var("TRUNKSCOPE_ADMIN_PASSWORD_HASH").is_ok(),
+    })
+}
+
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(request): Json<LoginRequest>,
