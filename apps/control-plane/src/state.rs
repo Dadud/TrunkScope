@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    path::PathBuf,
     sync::RwLock,
 };
 
@@ -23,6 +24,7 @@ pub struct AppState {
     pub calls: RwLock<VecDeque<Call>>,
     pub public_policy: RwLock<PublicationPolicy>,
     pub systems: RwLock<Vec<SystemProfile>>,
+    pub systems_path: PathBuf,
     pub decoder_calls: RwLock<HashMap<String, uuid::Uuid>>,
     pub decoder_systems: RwLock<HashMap<String, uuid::Uuid>>,
     pub events: broadcast::Sender<CallEvent>,
@@ -33,11 +35,19 @@ impl AppState {
     pub fn new() -> Self {
         let (events, _) = broadcast::channel(256);
         let (processing, _) = broadcast::channel(256);
+        let systems_path = std::env::var("TRUNKSCOPE_SYSTEMS_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/var/lib/trunkscope/audio/systems.json"));
+        let systems = std::fs::read_to_string(&systems_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
         Self {
             receivers: RwLock::new(Vec::new()),
             calls: RwLock::new(VecDeque::new()),
             public_policy: RwLock::new(PublicationPolicy::default()),
-            systems: RwLock::new(Vec::new()),
+            systems: RwLock::new(systems),
+            systems_path,
             decoder_calls: RwLock::new(HashMap::new()),
             decoder_systems: RwLock::new(HashMap::new()),
             events,

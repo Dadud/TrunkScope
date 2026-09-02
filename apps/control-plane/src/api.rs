@@ -129,6 +129,9 @@ async fn save_system(
     State(state): State<Arc<AppState>>,
     Json(mut profile): Json<SystemProfile>,
 ) -> (StatusCode, Json<SystemProfile>) {
+    if profile.name.trim().is_empty() || profile.control_channel_hz == 0 {
+        return (StatusCode::BAD_REQUEST, Json(profile));
+    }
     if profile.id.is_nil() {
         profile.id = uuid::Uuid::new_v4();
     }
@@ -138,6 +141,9 @@ async fn save_system(
         *existing = profile.clone();
     } else {
         systems.push(profile.clone());
+    }
+    if let Ok(serialized) = serde_json::to_vec_pretty(&*systems) {
+        let _ = std::fs::write(&state.systems_path, serialized);
     }
     (StatusCode::CREATED, Json(profile))
 }
