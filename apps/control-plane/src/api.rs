@@ -206,4 +206,19 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn analog_profile_does_not_require_control_channel_or_nac() {
+        let state = Arc::new(AppState::new());
+        let response = router(state)
+            .oneshot(
+                Request::post("/api/v1/systems")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"00000000-0000-0000-0000-000000000000","name":"Local FM","protocol":"analog-fm","frequencyHz":155550000,"bandwidthHz":12500,"modulation":"NFM"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
 }
