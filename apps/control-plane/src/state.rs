@@ -20,6 +20,9 @@ pub struct SystemProfile {
     pub modulation: Option<String>,
     pub squelch_db: Option<f32>,
     pub tone: Option<String>,
+    pub deviation_hz: Option<u32>,
+    pub step_hz: Option<u32>,
+    pub dwell_ms: Option<u32>,
 }
 
 pub const MAX_RECENT_CALLS: usize = 200;
@@ -30,6 +33,7 @@ pub struct AppState {
     pub public_policy: RwLock<PublicationPolicy>,
     pub systems: RwLock<Vec<SystemProfile>>,
     pub systems_path: PathBuf,
+    pub sessions: RwLock<HashMap<String, String>>,
     pub decoder_calls: RwLock<HashMap<String, uuid::Uuid>>,
     pub decoder_systems: RwLock<HashMap<String, uuid::Uuid>>,
     pub events: broadcast::Sender<CallEvent>,
@@ -53,6 +57,7 @@ impl AppState {
             public_policy: RwLock::new(PublicationPolicy::default()),
             systems: RwLock::new(systems),
             systems_path,
+            sessions: RwLock::new(HashMap::new()),
             decoder_calls: RwLock::new(HashMap::new()),
             decoder_systems: RwLock::new(HashMap::new()),
             events,

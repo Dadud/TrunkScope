@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod decoder;
 mod processor;
 mod radiod;

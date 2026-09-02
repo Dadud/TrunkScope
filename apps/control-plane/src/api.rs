@@ -19,6 +19,15 @@ use crate::state::{AppState, SystemProfile};
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/v1/health", get(health))
+        .route(
+            "/api/v1/auth/login",
+            axum::routing::post(crate::auth::login),
+        )
+        .route("/api/v1/auth/me", get(crate::auth::me))
+        .route(
+            "/api/v1/auth/logout",
+            axum::routing::post(crate::auth::logout),
+        )
         .route("/api/v1/snapshot", get(snapshot))
         .route("/api/v1/receivers", get(receivers))
         .route("/api/v1/calls", get(calls))
@@ -179,6 +188,17 @@ async fn save_system(
     {
         return (StatusCode::BAD_REQUEST, Json(profile));
     }
+    if !is_p25 {
+        let bandwidth_ok = matches!(profile.bandwidth_hz, Some(6250 | 12500 | 25000));
+        if !bandwidth_ok || profile.modulation.as_deref().is_none() {
+            return (StatusCode::BAD_REQUEST, Json(profile));
+        }
+        profile.control_channel_hz = None;
+        profile.nac = None;
+    } else {
+        profile.frequency_hz = None;
+        profile.tone = None;
+    }
     if profile.id.is_nil() {
         profile.id = uuid::Uuid::new_v4();
     }
@@ -190,6 +210,9 @@ async fn save_system(
         systems.push(profile.clone());
     }
     if let Ok(serialized) = serde_json::to_vec_pretty(&*systems) {
+        if let Some(parent) = state.systems_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let _ = std::fs::write(&state.systems_path, serialized);
     }
     (StatusCode::CREATED, Json(profile))
@@ -268,7 +291,11 @@ mod tests {
     #[tokio::test]
     async fn audio_requires_bearer_token() {
         let response = router(Arc::new(AppState::new()))
-            .oneshot(Request::get(format!("/api/v1/audio/{}", uuid::Uuid::new_v4())).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get(format!("/api/v1/audio/{}", uuid::Uuid::new_v4()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
