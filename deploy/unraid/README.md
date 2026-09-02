@@ -25,12 +25,14 @@ repository root:
 
 ```bash
 cp deploy/unraid/.env.example .env
+# If the default port is already in use (for example by SABnzbd), change it:
+# sed -i 's/^TRUNKSCOPE_HTTP_PORT=.*/TRUNKSCOPE_HTTP_PORT=18088/' .env
 mkdir -p /mnt/user/appdata/trunkscope/{postgres,minio,audio,calls,huggingface,ollama}
-docker compose -f deploy/compose.yml config --quiet
-docker compose -f deploy/compose.yml up -d --build
+docker compose --env-file .env -f deploy/compose.yml config --quiet
+docker compose --env-file .env -f deploy/compose.yml up -d --build
 ```
 
-Open `http://UNRAID_LAN_IP:8088`. The default simulator should show live calls
+Open `http://UNRAID_LAN_IP:${TRUNKSCOPE_HTTP_PORT}` (8088 by default). The simulator should show live calls
 before any radio is connected.
 
 ## Enable the RSP1B and P25 decoder
