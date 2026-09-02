@@ -11,11 +11,18 @@ audio processing happens on the laptop.
 
 The same stack also supports an SDR physically attached to Unraid. The Compose
 file passes `/dev/bus/usb` into the radio and decoder containers. RTL-SDR and
-other open drivers work directly; an RSP1B requires SDRplay API and SoapySDRPlay3
-installed in the Unraid container image (the vendor binaries are not redistributed
-by this project). Set `TRUNKSCOPE_RADIO_MODE=radiod` for the local radiod path,
-or use `decoder` with a local `osmosdr` source generated with
-`--device 'soapy=0,driver=rtlsdr'`.
+other open drivers work directly. For an RSP1B, place the licensed SDRplay API
+runtime and SoapySDRPlay3 module under the path in
+`TRUNKSCOPE_SDRPLAY_RUNTIME` (the tested layout is
+`/mnt/user/appdata/trunkscope/sdrplay`) and start the API service profile:
+
+```bash
+docker compose --env-file .env -f deploy/compose.yml --profile radio up -d sdrplay-service
+docker compose --env-file .env -f deploy/compose.yml --profile radio-tools run --rm radiod-tools --list-devices
+```
+
+Set `TRUNKSCOPE_RADIO_MODE=radiod` for the local radiod path, or use `decoder`
+with a local `osmosdr` source generated with `--device 'soapy=0,driver=rtlsdr'`.
 
 ## Install with Compose Manager
 
