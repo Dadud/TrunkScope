@@ -131,7 +131,9 @@ async fn audio(
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
-    if expected.is_empty() || provided != format!("Bearer {expected}") {
+    if (expected.is_empty() || provided != format!("Bearer {expected}"))
+        && !crate::auth::authenticated(&state, &headers)
+    {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let Some(asset) = state.calls.read().ok().and_then(|calls| {

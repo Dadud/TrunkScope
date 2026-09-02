@@ -106,3 +106,13 @@ fn cookie(headers: &HeaderMap) -> Option<&str> {
         .split(';')
         .find_map(|part| part.trim().strip_prefix("trunkscope_session="))
 }
+
+pub fn authenticated(state: &AppState, headers: &HeaderMap) -> bool {
+    cookie(headers).is_some_and(|token| {
+        state
+            .sessions
+            .read()
+            .expect("sessions lock poisoned")
+            .contains_key(token)
+    })
+}
