@@ -211,62 +211,6 @@ export function ApplianceDrawer({
     });
   }, [isOpen]);
 
-  if (!isOpen) return null;
-
-  const handleDiscoverReceivers = async () => {
-    setStatusMessage("Scanning for USB and network SDR devices…");
-    try {
-      const devices = await discoverReceivers();
-      setDiscoveredDevices(devices);
-      setStatusMessage(devices.length ? `Found ${devices.length} device(s)` : "No SDR devices detected");
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : "Discovery failed");
-    }
-  };
-
-  const applyDiscoveredDevice = (device: (typeof discoveredDevices)[number]) => {
-    setReceiverDraft((draft) => ({
-      ...draft,
-      label: device.label || `Soapy #${device.index}`,
-      driver: device.suggestedDriver,
-      serial: device.args || `driver=${device.driver}`,
-      soapyIndex: device.index,
-    }));
-    setShowAddReceiver(true);
-    setStatusMessage(`Selected ${device.label} (soapy=${device.index})`);
-  };
-
-  const systemsUsingReceiver = (receiverId: string) =>
-    systems.filter((system) => system.receiverId === receiverId).map((system) => system.name);
-
-  // Seed the Soapy args when the driver changes and the operator has not
-  // supplied custom device args (e.g. a remote= endpoint).
-  const seedSerialForDriver = (current: string, next: ReceiverInput["driver"]): string => {
-    const trimmed = current.trim();
-    if (!trimmed || /^driver=[a-z0-9]+$/i.test(trimmed)) {
-      return `driver=${SOAPY_DRIVER_ARGS[next]}`;
-    }
-    return current;
-  };
-
-  const activeSubmodelOptions =
-    devicePresets.find((preset) => preset.driver === receiverDraft.driver)?.submodels ?? [];
-  const activeSubmodel =
-    activeSubmodelOptions.find((submodel) => submodel.id === submodelId) ?? activeSubmodelOptions[0];
-
-  const applyOptimalDefaults = (driver: ReceiverInput["driver"], serial: string) => {
-    const preset = devicePresets.find((item) => item.driver === driver);
-    const submodel = preset?.submodels[0];
-    setReceiverDraft((draft) => {
-      const next = { ...draft, driver, serial: seedSerialForDriver(serial, driver) };
-      return submodel ? applySubmodelPreset(next, submodel) : next;
-    });
-    setSubmodelId(submodel?.id ?? "");
-    if (submodel) {
-      setStatusMessage(`Applied ${submodel.label} defaults: ${presetSummary(submodel)}`);
-    }
-  };
-
   const refreshTranscribeModels = async () => {
     if (!settings?.transcribeUrl.trim()) {
       setTranscribeModels([]);
@@ -348,6 +292,62 @@ export function ApplianceDrawer({
     settings?.summaryProvider,
     settings?.summaryApiKey,
   ]);
+
+  if (!isOpen) return null;
+
+  const handleDiscoverReceivers = async () => {
+    setStatusMessage("Scanning for USB and network SDR devices…");
+    try {
+      const devices = await discoverReceivers();
+      setDiscoveredDevices(devices);
+      setStatusMessage(devices.length ? `Found ${devices.length} device(s)` : "No SDR devices detected");
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : "Discovery failed");
+    }
+  };
+
+  const applyDiscoveredDevice = (device: (typeof discoveredDevices)[number]) => {
+    setReceiverDraft((draft) => ({
+      ...draft,
+      label: device.label || `Soapy #${device.index}`,
+      driver: device.suggestedDriver,
+      serial: device.args || `driver=${device.driver}`,
+      soapyIndex: device.index,
+    }));
+    setShowAddReceiver(true);
+    setStatusMessage(`Selected ${device.label} (soapy=${device.index})`);
+  };
+
+  const systemsUsingReceiver = (receiverId: string) =>
+    systems.filter((system) => system.receiverId === receiverId).map((system) => system.name);
+
+  // Seed the Soapy args when the driver changes and the operator has not
+  // supplied custom device args (e.g. a remote= endpoint).
+  const seedSerialForDriver = (current: string, next: ReceiverInput["driver"]): string => {
+    const trimmed = current.trim();
+    if (!trimmed || /^driver=[a-z0-9]+$/i.test(trimmed)) {
+      return `driver=${SOAPY_DRIVER_ARGS[next]}`;
+    }
+    return current;
+  };
+
+  const activeSubmodelOptions =
+    devicePresets.find((preset) => preset.driver === receiverDraft.driver)?.submodels ?? [];
+  const activeSubmodel =
+    activeSubmodelOptions.find((submodel) => submodel.id === submodelId) ?? activeSubmodelOptions[0];
+
+  const applyOptimalDefaults = (driver: ReceiverInput["driver"], serial: string) => {
+    const preset = devicePresets.find((item) => item.driver === driver);
+    const submodel = preset?.submodels[0];
+    setReceiverDraft((draft) => {
+      const next = { ...draft, driver, serial: seedSerialForDriver(serial, driver) };
+      return submodel ? applySubmodelPreset(next, submodel) : next;
+    });
+    setSubmodelId(submodel?.id ?? "");
+    if (submodel) {
+      setStatusMessage(`Applied ${submodel.label} defaults: ${presetSummary(submodel)}`);
+    }
+  };
 
   // Receiver actions
   const handleReceiverAction = async (id: string, action: "probe" | "start" | "stop" | "restart") => {

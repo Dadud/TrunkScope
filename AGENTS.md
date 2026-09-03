@@ -116,6 +116,7 @@ The tested Unraid appliance is on the local network at `192.168.1.4:18088`.
 - Jackson County FM test channels are configured at 154.445 MHz / 123.0 PL and 151.0625 MHz / 82.5 PL.
 - Ollama summary on the appliance LAN (`192.168.1.4:11434`) is healthy with `qwen3.5:9b-q4_K_M` installed.
 - Transcription may target a **separate** LAN host (e.g. vLLM on a Windows PC with a 3060). Use the LAN IP in `transcribeUrl`, not `localhost`; confirm `GET {origin}/v1/models` responds from the appliance network before expecting transcripts.
+- **Docker VMM** (Docker Desktop’s new VM backend) does **not** expose NVIDIA GPUs to Linux containers yet. The vLLM transcription host must use the **WSL 2** backend or run vLLM inside WSL2 — see `deploy/vllm-asr/README.md`.
 - Local-only mode is currently enabled on the tested appliance; keep the port restricted to the trusted LAN/VPN.
 
 Do not store passwords, tokens, private keys, or live credential files in this repository. Obtain them from the operator/environment when deployment work explicitly requires them.

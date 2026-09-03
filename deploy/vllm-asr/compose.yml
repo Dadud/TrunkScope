@@ -1,0 +1,44 @@
+# Qwen3-ASR (radio-tuned) via official vLLM OpenAI server.
+# Requires Docker Desktop on Windows with the WSL 2 backend (not Docker VMM) for GPU.
+#
+# TrunkScope transcribeUrl:
+#   http://<THIS_HOST_LAN_IP>:8000/v1/audio/transcriptions
+#
+# Verify from another machine on the LAN:
+#   curl http://<LAN_IP>:8000/v1/models
+
+services:
+  vllm-asr:
+    image: vllm/vllm-openai:latest
+    container_name: trunkscope-vllm-asr
+    restart: unless-stopped
+    ports:
+      - "${VLLM_ASR_PORT:-8000}:8000"
+    environment:
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+    shm_size: 4gb
+    gpus: all
+    command:
+      - --model
+      - ${VLLM_ASR_MODEL:-chrullis/qwen3-asr-radio-1.7b}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
+      - --max-model-len
+      - ${VLLM_MAX_MODEL_LEN:-4096}
+      - --max-num-seqs
+      - ${VLLM_MAX_NUM_SEQS:-4}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 10m
+
+volumes:
+  huggingface-cache:
