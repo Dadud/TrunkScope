@@ -18,8 +18,8 @@ use tower_http::{
     trace::TraceLayer,
 };
 use trunkscope_domain::{
-    Call, PublicationPolicy, Receiver, ReceiverDriver, ReceiverHealth,
-    ReceiverRole, ReceiverState, Talkgroup,
+    Call, PublicationPolicy, Receiver, ReceiverDriver, ReceiverHealth, ReceiverRole, ReceiverState,
+    Talkgroup,
 };
 
 use crate::{
@@ -90,7 +90,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/integrations/transcribe/models",
             get(transcribe_models).post(transcribe_models),
         )
-        .route("/api/v1/integrations/transcribe/test", post(transcribe_test))
+        .route(
+            "/api/v1/integrations/transcribe/test",
+            post(transcribe_test),
+        )
         .route("/api/v1/integrations/summary", get(summary_status))
         .route(
             "/api/v1/integrations/summary/models",
@@ -148,8 +151,9 @@ pub fn router(state: Arc<AppState>) -> Router {
     // side routing.
     if let Ok(dist) = std::env::var("TRUNKSCOPE_WEB_DIST") {
         if !dist.trim().is_empty() {
-            let serve = ServeDir::new(&dist)
-                .fallback(ServeFile::new(std::path::Path::new(&dist).join("index.html")));
+            let serve = ServeDir::new(&dist).fallback(ServeFile::new(
+                std::path::Path::new(&dist).join("index.html"),
+            ));
             app = app.fallback_service(serve);
             tracing::info!(path = %dist, "serving embedded web UI");
         }
@@ -451,8 +455,7 @@ fn p25_control_channels(system: &SystemProfile, site_filter: Option<&str>) -> Ve
         .sites
         .iter()
         .filter(|site| {
-            site_filter
-                .is_none_or(|filter| site.name.to_ascii_lowercase().contains(filter))
+            site_filter.is_none_or(|filter| site.name.to_ascii_lowercase().contains(filter))
         })
         .collect();
     let site_channels = selected_sites
@@ -491,8 +494,7 @@ fn systems_for_receiver<'a>(
         .iter()
         .filter(|system| {
             system.receiver_id == Some(receiver_id)
-                || (system.receiver_id.is_none()
-                    && default_receiver_id == Some(receiver_id))
+                || (system.receiver_id.is_none() && default_receiver_id == Some(receiver_id))
         })
         .collect()
 }
@@ -522,11 +524,8 @@ fn build_decoder_source(
     let (requested_center, requested_span) = tuning_span(&all_tuning);
     let has_p25 = assigned.iter().any(|system| system.protocol == "p25");
     let has_analog = assigned.iter().any(|system| system.protocol == "analog-fm");
-    let gain = receiver
-        .gain_db
-        .or(settings.radio_gain_db)
-        .unwrap_or(40.0);
-    serde_json::json!({
+    let gain = receiver.gain_db.or(settings.radio_gain_db).unwrap_or(40.0);
+    let mut source = serde_json::json!({
         "center": requested_center.unwrap_or(receiver.center_frequency_hz.unwrap_or(settings.radio_frequency_hz)),
         "rate": requested_span.unwrap_or(0).max(if has_p25 { 6_000_000 } else { 0 }).max(receiver.sample_rate_hz.unwrap_or(settings.radio_sample_rate_hz) as u64),
         "error": receiver.ppm,
@@ -536,7 +535,11 @@ fn build_decoder_source(
         "analogRecorders": if has_analog { 2 } else { 0 },
         "driver": "osmosdr",
         "device": receiver_presets::device_string(receiver, &settings.radio_device, index),
-    })
+    });
+    if receiver.auto_tune == Some(true) {
+        source["autoTune"] = serde_json::json!(true);
+    }
+    source
 }
 
 pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
@@ -548,7 +551,11 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
     let receivers = state.receivers.read().expect("receiver lock poisoned");
     let systems = state.systems.read().expect("system lock poisoned");
     let site_filter = settings.effective_site_filter();
-    let enabled_receivers: Vec<_> = receivers.iter().filter(|receiver| receiver.enabled).cloned().collect();
+    let enabled_receivers: Vec<_> = receivers
+        .iter()
+        .filter(|receiver| receiver.enabled)
+        .cloned()
+        .collect();
     let default_receiver_id = enabled_receivers.first().map(|receiver| receiver.id);
     let mut sources: Vec<serde_json::Value> = Vec::new();
     if enabled_receivers.is_empty() {
@@ -653,10 +660,14 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
                 })
                 .collect();
             let control_channels = p25_control_channels(system, site_filter.as_deref());
-            let talkgroups_file =
-                talkgroups_file_for_system(&calls_root, &talkgroups, system.id, default_talkgroups_file);
+            let talkgroups_file = talkgroups_file_for_system(
+                &calls_root,
+                &talkgroups,
+                system.id,
+                default_talkgroups_file,
+            );
             let mut configured = serde_json::json!({
-                "type": "p25", "shortName": system.name,
+                "type": "p25", "shortName": short_name_for_system(system),
                 "control_channels": control_channels,
                 "sites": selected_sites,
                 "modulation": "qpsk", "squelch": -60, "recordUnknown": true, "hideEncrypted": false,
@@ -671,20 +682,27 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         .collect();
     drop(talkgroups);
     if systems.iter().any(|system| system.protocol == "analog-fm") {
-        let conventional_name = systems
+        let analog: Vec<_> = systems
             .iter()
             .filter(|system| system.protocol == "analog-fm")
-            .map(|system| system.name.as_str())
-            .collect::<Vec<_>>()
-            .join(" / ");
+            .collect();
+        // Trunk Recorder feeds shortName straight into recording filenames, so
+        // operator display names (spaces, slashes, ampersands) stay out of it.
+        // Per-channel squelch lives in the channel file; the system-level
+        // value seeds the source recorder before a channel squelch applies.
+        let squelch = analog
+            .iter()
+            .find_map(|system| system.squelch_db)
+            .unwrap_or(-60.0);
+        let decode_mdc = analog.iter().any(|system| system.decode_mdc == Some(true));
         let mut conventional = serde_json::json!({
             "type": "conventional",
-            "shortName": if conventional_name.is_empty() { "Conventional FM" } else { conventional_name.as_str() },
+            "shortName": "FM",
             "channelFile": "/var/lib/trunkscope/audio/decoder/analog-channels.csv",
-            "squelch": -60.0,
+            "squelch": squelch,
             "enabled": true,
             "deemphasisTau": 0.000750,
-            "decodeMDC": false,
+            "decodeMDC": decode_mdc,
             "decodeFSync": false,
         });
         attach_upload_script(&mut conventional);
@@ -713,16 +731,34 @@ fn talkgroups_file_for_system(
         return fallback.to_string();
     }
     let path = calls_root.join(format!("talkgroups-{}.csv", system_id));
-    let mut csv = String::from("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n");
+    // Trunk Recorder parses the header by name but expects Decimal first and
+    // understands the canonical Radio Reference ordering best.
+    let mut csv = String::from("Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category,Priority\n");
     for talkgroup in scoped {
+        let mode = talkgroup
+            .mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_uppercase())
+            .unwrap_or_else(|| "D".into());
+        // Priority is how many recorders a talkgroup needs; -1 means never
+        // record. The record flag wins over any stored priority.
+        let priority = if talkgroup.record {
+            talkgroup.priority.max(1)
+        } else {
+            -1
+        };
         csv.push_str(&format!(
-            "{},{:03X},\"{}\",D,\"{}\",\"{}\",\"{}\"\n",
+            "{},{:03X},{},\"{}\",\"{}\",\"{}\",\"{}\",{}\n",
             talkgroup.decimal_id,
             talkgroup.decimal_id,
+            mode,
             talkgroup.alpha_tag.replace('"', "'"),
             talkgroup.description.replace('"', "'"),
             talkgroup.category.replace('"', "'"),
-            talkgroup.category.replace('"', "'")
+            talkgroup.category.replace('"', "'"),
+            priority
         ));
     }
     if crate::state::atomic_write(&path, csv.as_bytes()).is_ok() {
@@ -730,6 +766,27 @@ fn talkgroups_file_for_system(
     } else {
         fallback.to_string()
     }
+}
+
+/// Trunk Recorder recommends 4-6 letters, no spaces, and feeds shortName
+/// directly into recording filenames. Strip everything that hurts there while
+/// keeping the name recognizable.
+fn sanitize_short_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(10)
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if cleaned.is_empty() {
+        "SYSTEM".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn short_name_for_system(system: &SystemProfile) -> String {
+    sanitize_short_name(&system.name)
 }
 
 fn attach_upload_script(system: &mut serde_json::Value) {
@@ -814,10 +871,7 @@ struct DecoderApplyResponse {
     radio_mode: String,
 }
 
-async fn decoder_apply(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn decoder_apply(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
@@ -827,7 +881,9 @@ async fn decoder_apply(
         .expect("settings lock poisoned")
         .radio_mode
         .clone();
-    state.force_apply.store(true, std::sync::atomic::Ordering::SeqCst);
+    state
+        .force_apply
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     // Make the request observable even when no worker is watching flags.
     state.bump_config_generation();
     (
@@ -1098,6 +1154,8 @@ struct ReceiverInput {
     #[serde(default)]
     role: ReceiverRole,
     soapy_index: Option<u32>,
+    #[serde(default)]
+    auto_tune: Option<bool>,
 }
 
 fn default_receiver_enabled() -> bool {
@@ -1118,6 +1176,7 @@ fn receiver_from_input(input: ReceiverInput, id: uuid::Uuid) -> Receiver {
         enabled: input.enabled,
         role: input.role,
         soapy_index: input.soapy_index,
+        auto_tune: input.auto_tune,
         capabilities: receiver_presets::default_capabilities(input.driver),
         health: ReceiverHealth {
             signal_dbfs: -120.0,
@@ -1303,11 +1362,7 @@ async fn discover_receivers(State(state): State<Arc<AppState>>, headers: HeaderM
     )
     .await;
     let Ok(Ok(output)) = output else {
-        return (
-            StatusCode::GATEWAY_TIMEOUT,
-            "device discovery timed out",
-        )
-            .into_response();
+        return (StatusCode::GATEWAY_TIMEOUT, "device discovery timed out").into_response();
     };
     if !output.status.success() {
         return (
@@ -1356,7 +1411,11 @@ async fn discover_receivers(State(state): State<Arc<AppState>>, headers: HeaderM
             suggested_driver,
         });
     }
-    (StatusCode::OK, Json(serde_json::json!({ "devices": devices }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "devices": devices })),
+    )
+        .into_response()
 }
 
 async fn receiver_probe(
@@ -1574,20 +1633,56 @@ struct OperationsSummary {
     threads: Vec<IncidentThread>,
 }
 
-async fn generate_operations_ai_summary(state: &AppState, hours: u32, threads: &[IncidentThread]) -> (Option<String>, String) {
-    let settings = state.settings.read().expect("settings lock poisoned").clone();
-    if !settings.ai_enabled { return (None, "disabled".into()); }
+async fn generate_operations_ai_summary(
+    state: &AppState,
+    hours: u32,
+    threads: &[IncidentThread],
+) -> (Option<String>, String) {
+    let settings = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .clone();
+    if !settings.ai_enabled {
+        return (None, "disabled".into());
+    }
     if settings.effective_summary_url().is_none() {
         return (None, "provider-unconfigured".into());
     }
     let mut context = String::new();
     for thread in threads.iter().take(12) {
-        context.push_str(&format!("Site/system: {}; channel plan: {}; calls: {}; severity: {}/5; excerpts: {}\n", thread.system_name, thread.talkgroup_label, thread.call_count, thread.severity, thread.excerpts.join(" | ")));
-        if context.len() > 6000 { context.truncate(6000); break; }
+        context.push_str(&format!(
+            "Site/system: {}; channel plan: {}; calls: {}; severity: {}/5; excerpts: {}\n",
+            thread.system_name,
+            thread.talkgroup_label,
+            thread.call_count,
+            thread.severity,
+            thread.excerpts.join(" | ")
+        ));
+        if context.len() > 6000 {
+            context.truncate(6000);
+            break;
+        }
     }
-    if context.is_empty() { return (Some(format!("No radio activity was recorded in the last {hours} hours.")), "generated".into()); }
-    let prompt = format!("Write a concise factual radio-operations brief (maximum 120 words) for the last {hours} hours. Group related activity, mention only details supported by the excerpts, call out notable incidents and locations, and say when there is not enough information. Do not invent names, addresses, or outcomes.\n\n{context}");
-    match crate::providers::summarize(&crate::providers::http_client(), &settings, &context, &prompt).await {
+    if context.is_empty() {
+        return (
+            Some(format!(
+                "No radio activity was recorded in the last {hours} hours."
+            )),
+            "generated".into(),
+        );
+    }
+    let prompt = format!(
+        "Write a concise factual radio-operations brief (maximum 120 words) for the last {hours} hours. Group related activity, mention only details supported by the excerpts, call out notable incidents and locations, and say when there is not enough information. Do not invent names, addresses, or outcomes.\n\n{context}"
+    );
+    match crate::providers::summarize(
+        &crate::providers::http_client(),
+        &settings,
+        &context,
+        &prompt,
+    )
+    .await
+    {
         Ok(text) if !text.trim().is_empty() => (Some(text), "generated".into()),
         Ok(_) => (None, "provider-invalid-response".into()),
         Err(_) => (None, "provider-unavailable".into()),
@@ -1705,7 +1800,8 @@ async fn operations_summary(
             hours
         )
     };
-    let (ai_summary, ai_summary_status) = generate_operations_ai_summary(&state, hours, &threads).await;
+    let (ai_summary, ai_summary_status) =
+        generate_operations_ai_summary(&state, hours, &threads).await;
     Json(OperationsSummary {
         hours,
         generated_at: chrono::Utc::now(),
@@ -1876,9 +1972,9 @@ async fn purge_calls(
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let cutoff = request.hours.map(|hours| {
-        chrono::Utc::now() - chrono::Duration::hours(hours.clamp(1, 24 * 365) as i64)
-    });
+    let cutoff = request
+        .hours
+        .map(|hours| chrono::Utc::now() - chrono::Duration::hours(hours.clamp(1, 24 * 365) as i64));
     let category = request
         .category
         .as_deref()
@@ -2005,7 +2101,11 @@ async fn operations_ask(
             break;
         }
     }
-    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    let settings = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .clone();
     if !settings.ai_enabled {
         return Json(OperationsAskResponse {
             answer: "AI is disabled in settings.".into(),
@@ -2197,7 +2297,11 @@ async fn transcribe_models(
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let mut settings = state.settings.read().expect("settings lock poisoned").clone();
+    let mut settings = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .clone();
     if let Some(Json(overrides)) = body {
         apply_transcribe_discovery_overrides(&mut settings, overrides);
     }
@@ -2215,7 +2319,11 @@ async fn summary_models(
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let mut settings = state.settings.read().expect("settings lock poisoned").clone();
+    let mut settings = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .clone();
     if let Some(Json(overrides)) = body {
         apply_summary_discovery_overrides(&mut settings, overrides);
     }
@@ -2229,7 +2337,11 @@ async fn transcribe_test(State(state): State<Arc<AppState>>, headers: HeaderMap)
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    let settings = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .clone();
     match crate::providers::test_transcribe(&settings).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => (StatusCode::BAD_GATEWAY, error).into_response(),
@@ -2240,7 +2352,11 @@ async fn summary_test(State(state): State<Arc<AppState>>, headers: HeaderMap) ->
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    let settings = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .clone();
     match crate::providers::test_summary(&settings).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => (StatusCode::BAD_GATEWAY, error).into_response(),
@@ -2251,7 +2367,11 @@ async fn geocoder_test(State(state): State<Arc<AppState>>, headers: HeaderMap) -
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    let settings = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .clone();
     match crate::providers::test_geocoder(&settings).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => (StatusCode::BAD_GATEWAY, error).into_response(),
@@ -2840,20 +2960,25 @@ async fn preview_sites(
         .sites
         .iter()
         .take(10)
-        .map(|site| serde_json::json!({
-            "name": site.name,
-            "nac": site.nac,
-            "controlChannelsHz": site.control_channels_hz,
-            "voiceChannelsHz": site.voice_channels_hz
-        }))
+        .map(|site| {
+            serde_json::json!({
+                "name": site.name,
+                "nac": site.nac,
+                "controlChannelsHz": site.control_channels_hz,
+                "voiceChannelsHz": site.voice_channels_hz
+            })
+        })
         .collect();
-    (StatusCode::OK, Json(serde_json::json!({
-        "valid": result.rows > 0,
-        "rows": result.rows,
-        "sample": sample,
-        "requiresConfirmation": true
-    })))
-    .into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "valid": result.rows > 0,
+            "rows": result.rows,
+            "sample": sample,
+            "requiresConfirmation": true
+        })),
+    )
+        .into_response()
 }
 
 async fn preview_systems(
@@ -3296,6 +3421,66 @@ mod tests {
         state
     }
 
+    #[test]
+    fn talkgroup_csv_uses_canonical_trunk_recorder_columns() {
+        let calls_root =
+            std::env::temp_dir().join(format!("trunkscope-csv-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&calls_root).unwrap();
+        let system_id = uuid::Uuid::new_v4();
+        let talkgroups = vec![
+            Talkgroup {
+                id: uuid::Uuid::new_v4(),
+                system_id,
+                decimal_id: 100,
+                alpha_tag: "Dispatch".into(),
+                description: "Main".into(),
+                category: "Fire".into(),
+                priority: 0,
+                enabled: true,
+                record: true,
+                public_allowed: false,
+                mode: Some("a".into()),
+            },
+            Talkgroup {
+                id: uuid::Uuid::new_v4(),
+                system_id,
+                decimal_id: 200,
+                alpha_tag: "Tacs".into(),
+                description: "Tactical".into(),
+                category: "Fire".into(),
+                priority: 3,
+                enabled: true,
+                record: false,
+                public_allowed: false,
+                mode: None,
+            },
+        ];
+        let written = talkgroups_file_for_system(
+            &calls_root,
+            &talkgroups,
+            system_id,
+            "/fallback/talkgroups.csv",
+        );
+        assert!(written.ends_with(&format!("talkgroups-{system_id}.csv")));
+        let csv = std::fs::read_to_string(calls_root.join(format!("talkgroups-{system_id}.csv")))
+            .unwrap();
+        assert!(csv.starts_with("Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category,Priority\n"));
+        // Mode honored (uppercased), record=false maps to Priority -1.
+        assert!(csv.contains("100,064,A,\"Dispatch\",\"Main\",\"Fire\",\"Fire\",1\n"));
+        assert!(csv.contains("200,0C8,D,\"Tacs\",\"Tactical\",\"Fire\",\"Fire\",-1\n"));
+        std::fs::remove_dir_all(&calls_root).ok();
+    }
+
+    #[test]
+    fn short_names_never_reach_trunk_recorder_filenames() {
+        assert_eq!(sanitize_short_name("Jackson County Fire"), "JACKSONCOU");
+        assert_eq!(
+            sanitize_short_name("Black River / Falls & EMS!"),
+            "BLACKRIVER"
+        );
+        assert_eq!(sanitize_short_name("///"), "SYSTEM");
+    }
+
     #[tokio::test]
     async fn health_endpoint_is_available() {
         let response = router(Arc::new(AppState::new()))
@@ -3384,6 +3569,7 @@ mod tests {
                 enabled: true,
                 role: ReceiverRole::P25,
                 soapy_index: Some(0),
+                auto_tune: None,
                 capabilities: receiver_presets::default_capabilities(ReceiverDriver::RtlSdr),
                 health: ReceiverHealth {
                     signal_dbfs: -120.0,
@@ -3406,6 +3592,7 @@ mod tests {
                 enabled: true,
                 role: ReceiverRole::General,
                 soapy_index: Some(1),
+                auto_tune: None,
                 capabilities: receiver_presets::default_capabilities(ReceiverDriver::Airspy),
                 health: ReceiverHealth {
                     signal_dbfs: -120.0,
@@ -3434,6 +3621,7 @@ mod tests {
                 dwell_ms: None,
                 sites: Vec::new(),
                 receiver_id: Some(receiver_a),
+                decode_mdc: None,
             },
             SystemProfile {
                 id: uuid::Uuid::new_v4(),
@@ -3452,6 +3640,7 @@ mod tests {
                 dwell_ms: None,
                 sites: Vec::new(),
                 receiver_id: Some(receiver_b),
+                decode_mdc: None,
             },
         ]);
         let config = decoder_config_value(&state);
@@ -3482,12 +3671,18 @@ mod tests {
             dwell_ms: Some(2_500),
             sites: Vec::new(),
             receiver_id: None,
+            decode_mdc: None,
         });
         let config = decoder_config_value(&state);
         let systems = config["systems"].as_array().unwrap();
         assert_eq!(systems.len(), 1);
         assert_eq!(systems[0]["type"], "conventional");
-        assert_eq!(systems[0]["shortName"], "Jackson County Fire");
+        // Filenames derive from shortName, so display names never leak into it.
+        assert_eq!(systems[0]["shortName"], "FM");
+        assert_eq!(
+            systems[0]["squelch"], -65.0,
+            "system squelch seeds from the analog profile"
+        );
         assert_eq!(
             systems[0]["channelFile"],
             "/var/lib/trunkscope/audio/decoder/analog-channels.csv"
@@ -3557,7 +3752,9 @@ mod tests {
     #[test]
     fn parses_remote_soapy_endpoint_for_diagnostics() {
         assert_eq!(
-            remote_endpoint("soapy=0,driver=remote,remote=tcp://192.168.1.50:55132,remote:driver=sdrplay"),
+            remote_endpoint(
+                "soapy=0,driver=remote,remote=tcp://192.168.1.50:55132,remote:driver=sdrplay"
+            ),
             Some(("192.168.1.50".into(), 55132))
         );
         assert!(remote_endpoint("driver=sdrplay").is_none());
@@ -3659,27 +3856,31 @@ mod tests {
     async fn purge_and_undo_round_trip() {
         let state = test_state();
         let call_id = uuid::Uuid::new_v4();
-        state.calls.write().expect("calls lock poisoned").push_back(Call {
-            id: call_id,
-            system_id: uuid::Uuid::new_v4(),
-            system_name: "Test".into(),
-            site_id: uuid::Uuid::new_v4(),
-            talkgroup_id: 1001,
-            talkgroup_label: "Dispatch".into(),
-            category: "Law".into(),
-            frequency_hz: 851_012_500,
-            tdma_slot: None,
-            source_radio_id: None,
-            started_at: chrono::Utc::now(),
-            ended_at: None,
-            state: trunkscope_domain::CallState::Complete,
-            encryption: trunkscope_domain::EncryptionState::Clear,
-            signal_dbfs: -40.0,
-            transcript: None,
-            summary: None,
-            location: None,
-            audio: None,
-        });
+        state
+            .calls
+            .write()
+            .expect("calls lock poisoned")
+            .push_back(Call {
+                id: call_id,
+                system_id: uuid::Uuid::new_v4(),
+                system_name: "Test".into(),
+                site_id: uuid::Uuid::new_v4(),
+                talkgroup_id: 1001,
+                talkgroup_label: "Dispatch".into(),
+                category: "Law".into(),
+                frequency_hz: 851_012_500,
+                tdma_slot: None,
+                source_radio_id: None,
+                started_at: chrono::Utc::now(),
+                ended_at: None,
+                state: trunkscope_domain::CallState::Complete,
+                encryption: trunkscope_domain::EncryptionState::Clear,
+                signal_dbfs: -40.0,
+                transcript: None,
+                summary: None,
+                location: None,
+                audio: None,
+            });
         let response = router(Arc::clone(&state))
             .oneshot(
                 Request::post("/api/v1/calls/purge")

@@ -69,6 +69,10 @@ pub struct SystemProfile {
     /// When set, Trunk Recorder sources are tuned from systems assigned to this receiver.
     #[serde(default, deserialize_with = "flexible_uuid::deserialize_option")]
     pub receiver_id: Option<uuid::Uuid>,
+    /// Conventional only: enable Trunk Recorder's MDC-1200 signaling decoder
+    /// (fire station alerting tones).
+    #[serde(default)]
+    pub decode_mdc: Option<bool>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -425,7 +429,8 @@ impl AppState {
     }
 
     pub fn pending_apply(&self) -> bool {
-        self.config_generation.load(Ordering::SeqCst) > self.applied_generation.load(Ordering::SeqCst)
+        self.config_generation.load(Ordering::SeqCst)
+            > self.applied_generation.load(Ordering::SeqCst)
     }
 }
 
@@ -501,6 +506,7 @@ impl AppState {
                                     enabled: true,
                                     record: true,
                                     public_allowed: false,
+                                    mode: None,
                                 })
                             })
                             .collect::<Vec<_>>();
@@ -581,8 +587,7 @@ impl AppState {
         if settings.schema_version < 4 {
             settings.schema_version = 4;
             if settings.summary_url.is_empty() {
-                settings.summary_url =
-                    std::env::var("TRUNKSCOPE_SUMMARY_URL").unwrap_or_default();
+                settings.summary_url = std::env::var("TRUNKSCOPE_SUMMARY_URL").unwrap_or_default();
             }
             if settings.geocoder_url.is_empty() {
                 settings.geocoder_url =
@@ -593,8 +598,7 @@ impl AppState {
                     std::env::var("TRUNKSCOPE_DISCORD_WEBHOOK_URL").unwrap_or_default();
             }
             if settings.site_filter.is_empty() {
-                settings.site_filter =
-                    std::env::var("TRUNKSCOPE_SITE_FILTER").unwrap_or_default();
+                settings.site_filter = std::env::var("TRUNKSCOPE_SITE_FILTER").unwrap_or_default();
             }
             if settings.geocoder_provider.is_empty() {
                 settings.geocoder_provider = default_geocoder_provider();

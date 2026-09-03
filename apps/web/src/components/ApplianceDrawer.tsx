@@ -71,7 +71,7 @@ interface ApplianceDrawerProps {
   onRemoveReceiver: (id: string) => void;
 }
 
-type Tab = "radio" | "receivers" | "scanlists" | "systems" | "talkgroups" | "integrations" | "policy" | "security" | "diagnostics";
+type Tab = "sources" | "systems" | "scanning" | "integrations" | "policy" | "security" | "diagnostics";
 
 const DRIVER_OPTIONS: Array<{ value: ReceiverInput["driver"]; label: string }> = [
   { value: "sdrplay", label: "SDRplay RSP" },
@@ -112,14 +112,15 @@ export function ApplianceDrawer({
   onUpdateReceiver,
   onRemoveReceiver,
 }: ApplianceDrawerProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("receivers");
+  const [activeTab, setActiveTab] = useState<Tab>("sources");
   const [statusMessage, setStatusMessage] = useState("");
   const [runtime, setRuntime] = useState<Awaited<ReturnType<typeof getRuntime>>>();
   const [diagnostics, setDiagnostics] = useState<Awaited<ReturnType<typeof getDiagnostics>>>();
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   const [decoderConfig, setDecoderConfig] = useState<string>("");
   const [talkgroups, setTalkgroups] = useState<Talkgroup[]>([]);
-  const [talkgroupDraft, setTalkgroupDraft] = useState<Talkgroup>({ id: "", systemId: "00000000-0000-0000-0000-000000000000", decimalId: 0, alphaTag: "New talkgroup", description: "", category: "Unknown", enabled: true, record: true, publicAllowed: false });
+  const [talkgroupPanelSystem, setTalkgroupPanelSystem] = useState<string | null>(null);
+  const [talkgroupDraft, setTalkgroupDraft] = useState<Talkgroup>({ id: "", systemId: "00000000-0000-0000-0000-000000000000", decimalId: 0, alphaTag: "New talkgroup", description: "", category: "Unknown", enabled: true, record: true, publicAllowed: false, mode: "D" });
   const [policy, setPolicy] = useState<PublicationPolicy>({ enabled: false, delaySeconds: 120, allowedTalkgroups: [], exposeTranscripts: false, exposeRadioIds: false, exposePreciseLocations: false });
   const [localOnly, setLocalOnly] = useState(false);
   const [activeScanListId, setActiveScanListId] = useState<string>();
@@ -137,6 +138,7 @@ export function ApplianceDrawer({
     enabled: true,
     role: "general",
     soapyIndex: 0,
+    autoTune: false,
   });
   const [discoveredDevices, setDiscoveredDevices] = useState<Awaited<ReturnType<typeof discoverReceivers>>>([]);
   const [devicePresets, setDevicePresets] = useState<ReceiverDevicePreset[]>([]);
@@ -419,13 +421,13 @@ export function ApplianceDrawer({
     }
   };
 
-  // Talkgroups CSV import
-  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+  // Talkgroups CSV import (scoped to the system whose panel hosts the input)
+  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>, systemId: string) => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const merge = (document.getElementById("tg-merge") as HTMLInputElement | null)?.checked ?? true;
-      const res = await importTalkgroups(file, { systemId: systems[0]?.id, merge });
+      const merge = (document.getElementById(`tg-merge-${systemId}`) as HTMLInputElement | null)?.checked ?? true;
+      const res = await importTalkgroups(file, { systemId, merge });
       setTalkgroups(await getTalkgroups());
       setStatusMessage(`Imported ${res.rows} talkgroups successfully`);
     } catch (err) {
@@ -475,20 +477,12 @@ export function ApplianceDrawer({
 
         {/* Tab Navigation */}
         <div className="appliance-tabs">
-          <button type="button" className={activeTab === "radio" ? "active" : ""} onClick={() => setActiveTab("radio")}>📻 RADIO</button>
           <button
             type="button"
-            className={activeTab === "receivers" ? "active" : ""}
-            onClick={() => setActiveTab("receivers")}
+            className={activeTab === "sources" ? "active" : ""}
+            onClick={() => setActiveTab("sources")}
           >
-            📡 RECEIVERS ({snapshot.receivers.length})
-          </button>
-          <button
-            type="button"
-            className={activeTab === "scanlists" ? "active" : ""}
-            onClick={() => setActiveTab("scanlists")}
-          >
-            📻 SCAN LISTS
+            📡 SOURCES ({snapshot.receivers.length})
           </button>
           <button
             type="button"
@@ -497,7 +491,13 @@ export function ApplianceDrawer({
           >
             ⚡ SYSTEMS
           </button>
-          <button type="button" className={activeTab === "talkgroups" ? "active" : ""} onClick={() => setActiveTab("talkgroups")}>🗂️ TALKGROUPS</button>
+          <button
+            type="button"
+            className={activeTab === "scanning" ? "active" : ""}
+            onClick={() => setActiveTab("scanning")}
+          >
+            📻 SCANNING
+          </button>
           <button type="button" className={activeTab === "integrations" ? "active" : ""} onClick={() => setActiveTab("integrations")}>🤖 AI & INTEGRATIONS</button>
           <button type="button" className={activeTab === "policy" ? "active" : ""} onClick={() => setActiveTab("policy")}>🌐 POLICY</button>
           <button
@@ -513,28 +513,30 @@ export function ApplianceDrawer({
         {statusMessage && <div className="appliance-status-bar">{statusMessage}</div>}
 
         <div className="appliance-body">
-          {activeTab === "radio" && settings && (
+          {/* SOURCES TAB */}
+          {activeTab === "sources" && (
             <div className="tab-pane">
-              <h3>Radio Mode & Tuning</h3>
-              <p className="pane-desc">Persisted radio settings drive decoder generation and receiver defaults. Saves apply automatically — the capture reloads within a few seconds.</p>
-              <div className="form-grid">
-                <label>Mode<select value={settings.radioMode} onChange={(e) => setSettings({ ...settings, radioMode: e.target.value })}><option value="simulator">Simulator</option><option value="radiod">radiod</option><option value="decoder">Decoder (Trunk Recorder)</option></select></label>
-                <label>Device<input value={settings.radioDevice} onChange={(e) => setSettings({ ...settings, radioDevice: e.target.value })} /></label>
-                <label>Center frequency (MHz)<MhzField valueHz={settings.radioFrequencyHz} placeholder="851.0125" onChange={(radioFrequencyHz) => setSettings({ ...settings, radioFrequencyHz })} /></label>
-                <label>Sample rate (MHz)<MhzField valueHz={settings.radioSampleRateHz} placeholder="2.4" onChange={(radioSampleRateHz) => setSettings({ ...settings, radioSampleRateHz })} /></label>
-                <label>Bandwidth (MHz)<MhzField valueHz={settings.radioBandwidthHz} placeholder="0.2" onChange={(value) => setSettings({ ...settings, radioBandwidthHz: value || undefined })} /></label>
-                <label>Gain (dB)<input type="number" value={settings.radioGainDb ?? ""} onChange={(e) => setSettings({ ...settings, radioGainDb: Number(e.target.value) })} /></label>
-                <label className="checkbox-label"><input type="checkbox" checked={settings.radioAgc} onChange={(e) => setSettings({ ...settings, radioAgc: e.target.checked })} /> AGC enabled</label>
-                <label>PPM<input type="number" step="0.1" value={settings.radioPpm} onChange={(e) => setSettings({ ...settings, radioPpm: Number(e.target.value) })} /></label>
-                <label>Site filter<input value={settings.siteFilter ?? ""} onChange={(e) => setSettings({ ...settings, siteFilter: e.target.value })} placeholder="Black River Falls" /></label>
-              </div>
-              <button type="button" className="primary-btn" onClick={handleSaveSettings}>Save radio settings</button>
-            </div>
-          )}
+              <h3>Capture Sources</h3>
+              <p className="pane-desc">Persisted settings and receivers drive decoder generation. Saves apply automatically — the capture reloads within a few seconds.</p>
 
-          {/* RECEIVERS TAB */}
-          {activeTab === "receivers" && (
-            <div className="tab-pane">
+              {settings && (
+                <div className="config-section">
+                  <h4>Capture settings</h4>
+                  <div className="form-grid">
+                    <label>Capture mode<select value={settings.radioMode} onChange={(e) => setSettings({ ...settings, radioMode: e.target.value })}><option value="simulator">Simulator</option><option value="radiod">radiod (native)</option><option value="decoder">Decoder (Trunk Recorder)</option></select></label>
+                    <label>Fallback device<input value={settings.radioDevice} onChange={(e) => setSettings({ ...settings, radioDevice: e.target.value })} /></label>
+                    <label>Center frequency (MHz)<MhzField valueHz={settings.radioFrequencyHz} placeholder="154.0" onChange={(radioFrequencyHz) => setSettings({ ...settings, radioFrequencyHz })} /></label>
+                    <label>Sample rate (MHz)<MhzField valueHz={settings.radioSampleRateHz} placeholder="2.4" onChange={(radioSampleRateHz) => setSettings({ ...settings, radioSampleRateHz })} /></label>
+                    <label>Bandwidth (MHz)<MhzField valueHz={settings.radioBandwidthHz} placeholder="0.2" onChange={(value) => setSettings({ ...settings, radioBandwidthHz: value || undefined })} /></label>
+                    <label>Gain (dB)<input type="number" value={settings.radioGainDb ?? ""} onChange={(e) => setSettings({ ...settings, radioGainDb: Number(e.target.value) })} /></label>
+                    <label className="checkbox-label"><input type="checkbox" checked={settings.radioAgc} onChange={(e) => setSettings({ ...settings, radioAgc: e.target.checked })} /> AGC enabled</label>
+                    <label>PPM<input type="number" step="0.1" value={settings.radioPpm} onChange={(e) => setSettings({ ...settings, radioPpm: Number(e.target.value) })} /></label>
+                    <label>Site filter<input value={settings.siteFilter ?? ""} onChange={(e) => setSettings({ ...settings, siteFilter: e.target.value })} placeholder="Black River Falls" /></label>
+                  </div>
+                  <button type="button" className="primary-btn" onClick={handleSaveSettings}>Save capture settings</button>
+                </div>
+              )}
+
               <div className="pane-header">
                 <h3>Hardware SDR Receivers</h3>
                 <div className="btn-row">
@@ -671,6 +673,15 @@ export function ApplianceDrawer({
                         }
                       /> Enabled
                     </label>
+                    <label className="checkbox-label" title="Trunk Recorder autoTune: track observed tuning offsets and correct each call">
+                      <input
+                        type="checkbox"
+                        checked={receiverDraft.autoTune ?? false}
+                        onChange={(e) =>
+                          setReceiverDraft({ ...receiverDraft, autoTune: e.target.checked })
+                        }
+                      /> Auto-tune PPM
+                    </label>
                     <label>
                       Gain (dB)
                       <input
@@ -756,12 +767,13 @@ export function ApplianceDrawer({
                             driver: r.driver,
                             serial: r.serial,
                             centerFrequencyHz: r.centerFrequencyHz ?? 154_000_000,
-                            sampleRateHz: r.sampleRateHz ?? 2400000,
+                            sampleRateHz: r.sampleRateHz ?? 2_400_000,
                             gainDb: r.gainDb ?? 40,
                             ppm: r.ppm,
                             enabled: r.enabled ?? true,
                             role: r.role ?? "general",
                             soapyIndex: r.soapyIndex ?? 0,
+                            autoTune: r.autoTune ?? false,
                           });
                         }}
                       >
@@ -840,13 +852,16 @@ export function ApplianceDrawer({
             </div>
           )}
 
-          {/* SCAN LISTS TAB */}
-          {activeTab === "scanlists" && (
+          {/* SCANNING TAB */}
+          {activeTab === "scanning" && (
             <div className="tab-pane">
               <h3>FM Conventional Scan Lists</h3>
               <p className="pane-desc">
-                Configure analog frequencies, squelch thresholds, and CTCSS/DCS tone lockouts.
+                Configure analog frequencies, squelch thresholds, and CTCSS/DCS tone lockouts. Scan lists run only in <strong>radiod</strong> capture mode — switch modes under Sources.
               </p>
+              {settings && settings.radioMode !== "radiod" && (
+                <p className="pane-desc warning">Current capture mode is <strong>{settings.radioMode}</strong>: these lists are configured but not being scanned right now.</p>
+              )}
 
               <div className="scanlist-container">
                 {scanLists.map((list) => (
@@ -1001,6 +1016,14 @@ export function ApplianceDrawer({
                       )}
                     </div>
                     <div className="btn-row">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setTalkgroupPanelSystem(talkgroupPanelSystem === sys.id ? null : sys.id)
+                        }
+                      >
+                        Talkgroups ({talkgroups.filter((tg) => tg.systemId === sys.id).length})
+                      </button>
                       <button type="button" onClick={() => setSystemDraft(sys)}>Edit</button>
                       <button type="button" className="danger-btn" onClick={async () => {
                         if (!window.confirm(`Delete system ${sys.name}?`)) return;
@@ -1013,6 +1036,76 @@ export function ApplianceDrawer({
                         }
                       }}>Delete</button>
                     </div>
+                    {talkgroupPanelSystem === sys.id && (
+                      <div className="r-edit-box">
+                        {sys.protocol !== "p25" && (
+                          <p className="pane-desc">Conventional FM channels do not use talkgroups — Trunk Recorder assigns virtual IDs automatically. Talkgroups apply to P25 systems.</p>
+                        )}
+                        {sys.protocol === "p25" && (
+                          <>
+                            {talkgroups.filter((tg) => tg.systemId === sys.id).length === 0 && (
+                              <p className="pane-desc">No talkgroups yet. Import a RadioReference CSV or add one below.</p>
+                            )}
+                            {talkgroups.filter((tg) => tg.systemId === sys.id).map((tg) => (
+                              <div key={tg.id} className="btn-row">
+                                <span>{tg.decimalId} · {tg.alphaTag} · {tg.mode?.toUpperCase() ?? "D"}</span>
+                                <button type="button" onClick={() => setTalkgroupDraft(tg)}>Edit</button>
+                                <button type="button" className="danger-btn" onClick={async () => {
+                                  try {
+                                    await deleteTalkgroup(tg.id);
+                                    setTalkgroups((items) => items.filter((item) => item.id !== tg.id));
+                                  } catch (error) {
+                                    setStatusMessage(error instanceof Error ? error.message : "Delete failed");
+                                  }
+                                }}>Delete</button>
+                              </div>
+                            ))}
+                            <div className="form-grid">
+                              <label>Alpha tag<input value={talkgroupDraft.alphaTag} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, alphaTag: e.target.value })} /></label>
+                              <label>Decimal ID<input type="number" value={talkgroupDraft.decimalId} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, decimalId: Number(e.target.value) })} /></label>
+                              <label>Mode
+                                <select value={talkgroupDraft.mode ?? "D"} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, mode: e.target.value })}>
+                                  <option value="D">D — Digital (P25)</option>
+                                  <option value="A">A — Analog</option>
+                                  <option value="M">M — Mixed</option>
+                                  <option value="T">T — TDMA</option>
+                                </select>
+                              </label>
+                              <label className="checkbox-label"><input type="checkbox" checked={talkgroupDraft.record ?? true} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, record: e.target.checked })} /> Record (unchecked = never record)</label>
+                            </div>
+                            <div className="btn-row">
+                              <button type="button" className="primary-btn" onClick={async () => {
+                                try {
+                                  const saved = await saveTalkgroup({
+                                    ...talkgroupDraft,
+                                    systemId: sys.id,
+                                    id: talkgroupDraft.id || crypto.randomUUID(),
+                                  });
+                                  setTalkgroups((items) => [...items.filter((item) => item.id !== saved.id), saved]);
+                                  setTalkgroupDraft({
+                                    id: "",
+                                    systemId: sys.id,
+                                    decimalId: 0,
+                                    alphaTag: "New talkgroup",
+                                    description: "",
+                                    category: "Unknown",
+                                    enabled: true,
+                                    record: true,
+                                    publicAllowed: false,
+                                    mode: "D",
+                                  });
+                                  setStatusMessage(`Saved talkgroup ${saved.alphaTag}`);
+                                } catch (error) {
+                                  setStatusMessage(error instanceof Error ? error.message : "Talkgroup save failed");
+                                }
+                              }}>Save talkgroup</button>
+                              <label className="checkbox-label"><input type="checkbox" id={`tg-merge-${sys.id}`} defaultChecked /> Merge on import</label>
+                              <input type="file" accept=".csv" onChange={(e) => void handleFileUpload(e, sys.id)} />
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1088,8 +1181,15 @@ export function ApplianceDrawer({
                         <input value={systemDraft.tone ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, tone: e.target.value.trim() || undefined })} placeholder="123.0 or D023N" />
                         <small className="pane-desc">Squelch tone; leave blank for carrier squelch. Not two-tone dispatch.</small>
                       </label>
-                     </>
-                   )}
+                      <label className="checkbox-label" title="Decode MDC-1200 signaling (fire station alerting tones)">
+                        <input
+                          type="checkbox"
+                          checked={systemDraft.decodeMdc ?? false}
+                          onChange={(e) => setSystemDraft({ ...systemDraft, decodeMdc: e.target.checked })}
+                        /> Decode MDC signaling
+                      </label>
+                      </>
+                    )}
                   <label>
                     Assigned receiver
                     <select
@@ -1111,42 +1211,6 @@ export function ApplianceDrawer({
                 <button type="button" className="primary-btn" onClick={handleSaveSystem}>
                   Save System Profile
                 </button>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "talkgroups" && (
-            <div className="tab-pane">
-              <h3>Talkgroup Database</h3>
-              <div className="import-box">
-                <label className="checkbox-label"><input type="checkbox" id="tg-merge" defaultChecked /> Merge with existing catalog</label>
-                <input type="file" accept=".csv" onChange={handleFileUpload} />
-              </div>
-              <div className="form-grid">
-                <label>Alpha tag<input value={talkgroupDraft.alphaTag} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, alphaTag: e.target.value })} /></label>
-                <label>Decimal ID<input type="number" value={talkgroupDraft.decimalId} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, decimalId: Number(e.target.value) })} /></label>
-                <label>Description<input value={talkgroupDraft.description} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, description: e.target.value })} /></label>
-                <label>Category<input value={talkgroupDraft.category} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, category: e.target.value })} /></label>
-              </div>
-              <button type="button" className="primary-btn" onClick={async () => {
-                try {
-                  const saved = await saveTalkgroup({ ...talkgroupDraft, id: talkgroupDraft.id || crypto.randomUUID() });
-                  setTalkgroups((items) => [...items.filter((item) => item.id !== saved.id), saved]);
-                  setStatusMessage("Talkgroup saved");
-                } catch (error) {
-                  setStatusMessage(error instanceof Error ? error.message : "Talkgroup save failed");
-                }
-              }}>Save talkgroup</button>
-              <div className="systems-list">
-                {talkgroups.map((tg) => (
-                  <div key={tg.id} className="config-box">
-                    <strong>{tg.alphaTag}</strong> · {tg.decimalId} · {tg.category}
-                    <div className="btn-row">
-                      <button type="button" onClick={() => setTalkgroupDraft(tg)}>Edit</button>
-                      <button type="button" onClick={async () => { await deleteTalkgroup(tg.id); setTalkgroups((items) => items.filter((item) => item.id !== tg.id)); }}>Delete</button>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           )}

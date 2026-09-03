@@ -25,6 +25,10 @@ pub struct Receiver {
     pub role: ReceiverRole,
     #[serde(default)]
     pub soapy_index: Option<u32>,
+    /// Trunk Recorder `autoTune`: track observed tuning offsets and correct
+    /// each call. Useful for SDRs with drifting clocks (RTL-SDR).
+    #[serde(default)]
+    pub auto_tune: Option<bool>,
     pub capabilities: ReceiverCapabilities,
     pub health: ReceiverHealth,
 }
@@ -127,6 +131,10 @@ pub struct Talkgroup {
     pub enabled: bool,
     pub record: bool,
     pub public_allowed: bool,
+    /// Trunk Recorder talkgroup mode: A (analog), D (digital),
+    /// M (mixed), T (TDMA). Defaults to digital when unset.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

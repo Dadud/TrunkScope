@@ -19,11 +19,12 @@ Column detection is flexible — `Decimal` and `Alpha Tag` columns are required;
 
 ### Web UI
 
-**Appliance → Talkgroups**
+**Appliance → Systems → Talkgroups** (per-system panel inside each P25 system card)
 
-1. Check **Merge with existing catalog** to update in place (match by decimal ID + system)
-2. Upload CSV
-3. Catalog and decoder config regenerate automatically
+1. Pick the system, click **Talkgroups (N)**
+2. Check **Merge on import** to update in place (match by decimal ID + system)
+3. Upload CSV, or add talkgroups manually with a Mode (A/D/M/T) and record flag
+4. Catalog and decoder config regenerate automatically
 
 ### API
 
@@ -42,7 +43,7 @@ POST /api/v1/imports/talkgroups/preview
 
 ### Per-system talkgroups
 
-Rows bind to `systemId` query param (defaults to first P25 system). Decoder config emits per-system `talkgroups-{systemId}.csv` for Trunk Recorder.
+Rows bind to `systemId` (required in the UI panel). Decoder config emits per-system `talkgroups-{systemId}.csv` for Trunk Recorder in canonical column order (`Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category,Priority`). `Mode` comes from the talkgroup's mode field (default `D`); a talkgroup with **Record** off exports as `Priority -1` (never record).
 
 Fixture example: [`deploy/decoder/trs_tg_6364.csv`](../deploy/decoder/trs_tg_6364.csv)
 

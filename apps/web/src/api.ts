@@ -12,7 +12,7 @@ export async function getSettings(): Promise<AppSettings> { const response = awa
 export async function saveSettings(settings: AppSettings): Promise<AppSettings> { const response = await fetch("/api/v1/settings", { method: "PUT", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(settings) }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : response.status === 400 ? "Check the coordinates and home label" : `API returned ${response.status}`); return response.json() as Promise<AppSettings>; }
 export async function getRuntime(): Promise<RuntimeStatus> { const response = await fetch("/api/v1/runtime"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<RuntimeStatus>; }
 export async function receiverAction(id: string, action: "probe" | "start" | "stop" | "restart"): Promise<Receiver> { const response = await fetch(`/api/v1/receivers/${id}/${action}`, { method: "POST", credentials: "include" }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`); return response.json() as Promise<Receiver>; }
-export type ReceiverInput = Pick<Receiver, "label" | "driver" | "serial" | "centerFrequencyHz" | "sampleRateHz" | "gainDb" | "ppm" | "enabled" | "role" | "soapyIndex">;
+export type ReceiverInput = Pick<Receiver, "label" | "driver" | "serial" | "centerFrequencyHz" | "sampleRateHz" | "gainDb" | "ppm" | "enabled" | "role" | "soapyIndex" | "autoTune">;
 export type ReceiverSubmodelPreset = { id: string; label: string; sampleRateHz: number; gainDb: number; ppm: number; centerFrequencyHz: number; notes?: string };
 export type ReceiverDevicePreset = { driver: Receiver["driver"]; label: string; submodels: ReceiverSubmodelPreset[] };
 export async function getReceiverPresets(): Promise<ReceiverDevicePreset[]> { const response = await fetch("/api/v1/receivers/presets"); if (!response.ok) throw new Error(`Presets unavailable (${response.status})`); return response.json() as Promise<ReceiverDevicePreset[]>; }
@@ -82,7 +82,7 @@ export async function getSession(): Promise<Session | undefined> { const respons
 export async function logout(): Promise<void> { await fetch("/api/v1/auth/logout", { method: "POST", credentials: "include" }); }
 
 export type SystemSite = { id: string; name: string; controlChannelsHz: number[]; voiceChannelsHz: number[]; latitude?: number; longitude?: number };
-export type SystemProfile = { id: string; name: string; protocol: string; controlChannelHz?: number; controlChannelsHz?: number[]; nac?: number; frequencyHz?: number; bandwidthHz?: number; modulation?: string; squelchDb?: number; tone?: string; deviationHz?: number; stepHz?: number; dwellMs?: number; sites?: SystemSite[]; receiverId?: string };
+export type SystemProfile = { id: string; name: string; protocol: string; controlChannelHz?: number; controlChannelsHz?: number[]; nac?: number; frequencyHz?: number; bandwidthHz?: number; modulation?: string; squelchDb?: number; tone?: string; deviationHz?: number; stepHz?: number; dwellMs?: number; sites?: SystemSite[]; receiverId?: string; decodeMdc?: boolean };
 export type ScanChannel = { id: string; name: string; frequencyHz: number; modulation: string; bandwidthHz: number; squelchDb: number; tone?: string; toneRequired: boolean; dwellMs: number; priority: number; lockedOut: boolean };
 export type ScanList = { id: string; name: string; enabled: boolean; pauseOnActivity: boolean; resumeAfterMs: number; channels: ScanChannel[] };
 export type ConversationSession = { id: string; talkgroupId: number; callIds: string[]; state: string; transcript?: string; summary?: string; location?: { label: string; latitude: number; longitude: number; confidence: number }; audioKeys?: string[] };
@@ -246,7 +246,7 @@ export function subscribeToCalls(
   return () => socket.close();
 }
 
-export type Talkgroup = { id: string; systemId: string; decimalId: number; alphaTag: string; description: string; category: string; priority?: number; enabled?: boolean; record?: boolean; publicAllowed?: boolean };
+export type Talkgroup = { id: string; systemId: string; decimalId: number; alphaTag: string; description: string; category: string; priority?: number; enabled?: boolean; record?: boolean; publicAllowed?: boolean; mode?: string };
 export type AuditEntry = { action: string; resourceType: string; resourceId: string; occurredAt: string };
 export type PublicationPolicy = { enabled: boolean; delaySeconds: number; allowedTalkgroups: string[]; exposeTranscripts: boolean; exposeRadioIds: boolean; exposePreciseLocations: boolean };
 

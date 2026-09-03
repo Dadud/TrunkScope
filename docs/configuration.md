@@ -4,17 +4,19 @@ Settings are persisted in `audio/settings.json` on the appdata volume. Environme
 
 ## Web UI
 
-Open **Appliance** (gear icon) → tabs:
+Open **Console** (gear icon) → tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Radio** | Mode, device, gain, site filter, decoder regen |
-| **Systems** | P25 / FM profiles, site editor, CSV import |
-| **Talkgroups** | Catalog CRUD, CSV import (merge mode) |
+| **Sources** | Capture mode, device defaults, SDR receivers (presets, auto-tune), site filter |
+| **Systems** | P25 / FM profiles, per-system talkgroups, site editor, CSV import, MDC decode |
+| **Scanning** | FM scan lists (radiod mode only) |
 | **AI & Integrations** | Providers, API keys, Discord, retention |
 | **Policy** | Public feed allowlist and privacy |
-| **Diagnostics** | Runtime state, decoder config preview |
+| **Diagnostics** | Runtime state, decoder config preview, forced apply |
 | **Security** | Password rotation |
+
+Saves apply automatically: the running capture reloads within a few seconds (the header shows **PENDING APPLY** until it does). Diagnostics offers a forced reload for impatience.
 
 ## Core settings (`AppSettings`)
 

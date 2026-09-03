@@ -13,6 +13,7 @@ export interface Receiver {
   enabled?: boolean;
   role?: "general" | "p25" | "analog";
   soapyIndex?: number;
+  autoTune?: boolean;
   capabilities?: {
     minimumFrequencyHz: number;
     maximumFrequencyHz: number;

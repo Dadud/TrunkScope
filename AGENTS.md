@@ -64,6 +64,8 @@ Supported targets:
 - Remote Soapy endpoints are parsed and probed explicitly.
 - RSP1B defaults are capability-oriented rather than one hard-coded gain value.
 - Appliance image installs Soapy modules for RTL-SDR, Airspy, and remote; SDRplay uses the vendor runtime mount.
+- **Saves apply automatically:** config generation tracking (`config_generation`/`applied_generation` in `AppState`, task in `apply.rs`) reloads the capture after saves — radiod interrupts its child, decoder mode runs `supervisorctl restart decoder` (supervisord has a unix socket), `POST /api/v1/decoder/apply` forces it. UI reports `decoderConfigPending` as a header pill; never tell operators to "restart to apply".
+- Per-receiver `autoTune` toggles Trunk Recorder's experimental offset auto-correction (useful for RTL-SDR clocks).
 - **Deferred:** per-receiver `radiod` workers with health attribution (single capture path today).
 
 ### Radio and decoding
@@ -101,7 +103,8 @@ Supported targets:
 - Operations brief uses 1h/4h/12h tabs and configurable refresh interval (default 15 minutes).
 - Map center defaults to Spaulding Rd / Old Hwy 54, Pittsville, Wisconsin, while persisted home settings win.
 - Error boundaries and route-level loading/error states are present.
-- **Appliance drawer** (`ApplianceDrawer.tsx`): receivers (discover/probe/verify), systems with receiver assignment, integrations with endpoint-based model pickers (`IntegrationModelField.tsx`), policy, security, diagnostics.
+- **Console drawer** (`ApplianceDrawer.tsx`): tabs are **Sources** (capture settings + receivers with device presets from `GET /api/v1/receivers/presets`), **Systems** (per-system card with P25 NAC hex / FM PL tone + per-system talkgroups + CSV import; no standalone Talkgroups tab), **Scanning** (radiod-only), integrations with endpoint-based model pickers (`IntegrationModelField.tsx`), policy, security, diagnostics. Frequencies are edited in MHz (`MhzField`); the API stays Hz.
+- **Trunk Recorder fidelity:** talkgroup CSV uses canonical RR column order with `Mode` (A/D/M/T) and `Priority` (-1 when record off); conventional systems emit sanitized `shortName: "FM"` (display names never reach filenames), system squelch seeds from the FM profile, and `decodeMDC` is profile-driven.
 - **Integrations tab:** stack presets seed URLs; transcribe/summary models auto-discover on URL change (debounced) with manual override fallback; derived ASR profile shown read-only.
 - **First-run wizard** uses the same model discovery flow as the integrations tab.
 

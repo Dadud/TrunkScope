@@ -1,4 +1,4 @@
-mod api;
+﻿mod api;
 mod apply;
 mod auth;
 mod decoder;
@@ -93,6 +93,7 @@ async fn main() -> Result<()> {
                 enabled: true,
                 role: trunkscope_domain::ReceiverRole::General,
                 soapy_index: Some(0),
+                auto_tune: None,
                 capabilities: ReceiverCapabilities {
                     minimum_frequency_hz: 1_000_000,
                     maximum_frequency_hz: 2_000_000_000,

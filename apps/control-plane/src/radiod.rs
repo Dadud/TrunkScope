@@ -10,12 +10,15 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 use trunkscope_domain::{
-    AudioAsset, Call, CallEvent, CallState, EncryptionState, Receiver,
-    ReceiverDriver, ReceiverHealth, ReceiverRole, ReceiverState,
+    AudioAsset, Call, CallEvent, CallState, EncryptionState, Receiver, ReceiverDriver,
+    ReceiverHealth, ReceiverRole, ReceiverState,
 };
 use uuid::Uuid;
 
-use crate::{receiver_presets, state::{AppState, ReceiverCommand}};
+use crate::{
+    receiver_presets,
+    state::{AppState, ReceiverCommand},
+};
 
 #[derive(Clone)]
 struct RadioConfig {
@@ -265,6 +268,7 @@ fn initial_receiver(id: Uuid, config: &RadioConfig) -> Receiver {
         enabled: true,
         role: ReceiverRole::General,
         soapy_index: Some(0),
+        auto_tune: None,
         capabilities: receiver_presets::default_capabilities(driver),
         health: ReceiverHealth {
             signal_dbfs: -200.0,

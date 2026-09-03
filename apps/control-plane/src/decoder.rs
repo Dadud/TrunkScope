@@ -461,6 +461,7 @@ mod tests {
                 dwell_ms: Some(2500),
                 sites: Vec::new(),
                 receiver_id: None,
+                decode_mdc: None,
             });
         let event: StatusEvent = serde_json::from_str(r#"{"type":"call_start","call":{"id":"tone-1","freq":"166550000","talkgroup":"1","analog":true,"tone":"123.0"}}"#).unwrap();
         apply_status(&state, event);
@@ -491,6 +492,7 @@ mod tests {
                 dwell_ms: Some(2500),
                 sites: Vec::new(),
                 receiver_id: None,
+                decode_mdc: None,
             });
         let event: StatusEvent = serde_json::from_str(
             r#"{"type":"call_start","call":{"id":"dcs-1","freq":"166550000","talkgroup":"1","analog":true,"tone":"D023N"}}"#,

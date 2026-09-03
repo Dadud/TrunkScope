@@ -49,14 +49,8 @@ pub fn parse_talkgroup_csv(
             .cloned()
             .filter(|field| !field.is_empty())?;
         rows += 1;
-        let description = fields
-            .get(columns.description)
-            .cloned()
-            .unwrap_or_default();
-        let category = fields
-            .get(columns.category)
-            .cloned()
-            .unwrap_or_default();
+        let description = fields.get(columns.description).cloned().unwrap_or_default();
+        let category = fields.get(columns.category).cloned().unwrap_or_default();
         if let Some(existing_row) = imported
             .iter_mut()
             .find(|row| row.decimal_id == decimal_id && row.system_id == options.system_id)
@@ -77,6 +71,7 @@ pub fn parse_talkgroup_csv(
             enabled: true,
             record: true,
             public_allowed: false,
+            mode: None,
         });
     }
     Some(TalkgroupImportResult { imported, rows })
@@ -91,11 +86,12 @@ struct TalkgroupColumns {
 
 fn detect_talkgroup_columns(header: &str) -> Option<TalkgroupColumns> {
     let fields: Vec<String> = split_csv_line(header);
-    let lower: Vec<String> = fields.iter().map(|field| field.to_ascii_lowercase()).collect();
-    let decimal = lower.iter().position(|field| field.contains("decimal"))?;
-    let alpha_tag = lower
+    let lower: Vec<String> = fields
         .iter()
-        .position(|field| field.contains("alpha"))?;
+        .map(|field| field.to_ascii_lowercase())
+        .collect();
+    let decimal = lower.iter().position(|field| field.contains("decimal"))?;
+    let alpha_tag = lower.iter().position(|field| field.contains("alpha"))?;
     let description = lower
         .iter()
         .position(|field| field.contains("description"))
@@ -208,15 +204,16 @@ pub fn parse_systems_csv(csv: &str) -> Vec<SystemProfile> {
     let mut systems = Vec::new();
     for line in lines {
         let fields = split_csv_line(line);
-        let name = field_at(&fields, &columns, &["name", "system", "description"])
-            .unwrap_or_default();
+        let name =
+            field_at(&fields, &columns, &["name", "system", "description"]).unwrap_or_default();
         if name.is_empty() {
             continue;
         }
-        let protocol = field_at(&fields, &columns, &["protocol", "type"])
-            .unwrap_or_else(|| "p25".into());
-        let control_channel_hz = field_at(&fields, &columns, &["controlchannelhz", "control channel"])
-            .and_then(|value| value.parse().ok());
+        let protocol =
+            field_at(&fields, &columns, &["protocol", "type"]).unwrap_or_else(|| "p25".into());
+        let control_channel_hz =
+            field_at(&fields, &columns, &["controlchannelhz", "control channel"])
+                .and_then(|value| value.parse().ok());
         systems.push(SystemProfile {
             id: Uuid::new_v4(),
             name,
@@ -235,6 +232,7 @@ pub fn parse_systems_csv(csv: &str) -> Vec<SystemProfile> {
             dwell_ms: None,
             sites: Vec::new(),
             receiver_id: None,
+            decode_mdc: None,
         });
     }
     systems
@@ -294,6 +292,7 @@ mod tests {
             enabled: true,
             record: true,
             public_allowed: false,
+            mode: None,
         }];
         let result = parse_talkgroup_csv(
             csv,
