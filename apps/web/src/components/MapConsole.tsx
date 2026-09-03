@@ -19,10 +19,12 @@ interface MapConsoleProps {
   onCallUpdated?: (call: Call) => void;
 }
 
-const mapStyles: Record<MapStyleMode, { url: string; attribution: string }> = {
+const mapStyles: Record<MapStyleMode, { url: string; maxzoom?: number; attribution: string }> = {
   dark: {
-    url: "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-    attribution: "© CartoDB, © OpenStreetMap",
+    // Esri World Dark Gray Base — keyless dark cartography (Carto ended free basemaps).
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+    maxzoom: 16,
+    attribution: "© Esri, HERE, Garmin, © OpenStreetMap contributors",
   },
   satellite: {
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -32,6 +34,29 @@ const mapStyles: Record<MapStyleMode, { url: string; attribution: string }> = {
     url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     attribution: "© OpenStreetMap contributors",
   },
+};
+
+const buildMapStyle = (mode: MapStyleMode) => {
+  const conf = mapStyles[mode];
+  return {
+    version: 8 as const,
+    sources: {
+      basemap: {
+        type: "raster" as const,
+        tiles: [conf.url],
+        tileSize: 256 as const,
+        maxzoom: conf.maxzoom,
+        attribution: conf.attribution,
+      },
+    },
+    layers: [
+      {
+        id: "basemap",
+        type: "raster" as const,
+        source: "basemap",
+      },
+    ],
+  };
 };
 
 export function MapConsole({
@@ -47,9 +72,9 @@ export function MapConsole({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const popupRef = useRef<MapLibrePopup | null>(null);
+  const geoJsonRef = useRef<() => FeatureCollection<Point>>(() => ({ type: "FeatureCollection", features: [] }));
   const [styleMode, setStyleMode] = useState<MapStyleMode>("dark");
   const [heatmapEnabled, setHeatmapEnabled] = useState(false);
-
   const buildGeoJson = useCallback((): FeatureCollection<Point> => {
     const locatedCalls = calls.filter((c) => Boolean(c.location));
     const features: Feature<Point>[] = locatedCalls.map((call) => {
@@ -83,6 +108,12 @@ export function MapConsole({
 
     return { type: "FeatureCollection", features };
   }, [calls]);
+
+  // Keep the latest geojson builder reachable from the map "load" handler,
+  // which runs after style switches and must not replay stale call data.
+  useEffect(() => {
+    geoJsonRef.current = buildGeoJson;
+  }, [buildGeoJson]);
 
   const showCallPopup = useCallback((call: Call, coordinates: [number, number]) => {
     if (!mapRef.current) return;
@@ -123,30 +154,12 @@ export function MapConsole({
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
-    const currentConf = mapStyles[styleMode];
     const map = new maplibregl.Map({
       container: containerRef.current,
       center: homeCenter,
       zoom: 12,
       attributionControl: false,
-      style: {
-        version: 8,
-        sources: {
-          basemap: {
-            type: "raster",
-            tiles: [currentConf.url],
-            tileSize: 256,
-            attribution: currentConf.attribution,
-          },
-        },
-        layers: [
-          {
-            id: "basemap",
-            type: "raster",
-            source: "basemap",
-          },
-        ],
-      },
+      style: buildMapStyle(styleMode),
     });
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
@@ -155,11 +168,13 @@ export function MapConsole({
       // Add GeoJSON source with clustering
       map.addSource("incidents", {
         type: "geojson",
-        data: buildGeoJson(),
+        data: geoJsonRef.current(),
         cluster: true,
         clusterMaxZoom: 13,
         clusterRadius: 50,
       });
+      // The style may have loaded after call updates arrived; replay latest.
+      (map.getSource("incidents") as GeoJSONSource | undefined)?.setData(geoJsonRef.current());
 
       // Incident heatmap (toggleable)
       map.addLayer({
@@ -334,28 +349,11 @@ export function MapConsole({
 
   const handleLayerSwitch = (mode: MapStyleMode) => {
     if (mode === styleMode || !mapRef.current) return;
+    // The map init effect depends on styleMode, so it rebuilds the map (and
+    // all incident layers) from buildMapStyle; this setStyle only avoids a
+    // flash of the old basemap between teardown and re-creation.
     setStyleMode(mode);
-    const map = mapRef.current;
-    const conf = mapStyles[mode];
-
-    map.setStyle({
-      version: 8,
-      sources: {
-        basemap: {
-          type: "raster",
-          tiles: [conf.url],
-          tileSize: 256,
-          attribution: conf.attribution,
-        },
-      },
-      layers: [
-        {
-          id: "basemap",
-          type: "raster",
-          source: "basemap",
-        },
-      ],
-    });
+    mapRef.current.setStyle(buildMapStyle(mode));
   };
 
   const handleResetHome = () => {
@@ -402,7 +400,7 @@ export function MapConsole({
 
         <button
           type="button"
-          className={heatmapEnabled ? "active" : ""}
+          className={`map-tool-btn${heatmapEnabled ? " active" : ""}`}
           onClick={() => setHeatmapEnabled((value) => !value)}
           title="Toggle incident heatmap"
         >

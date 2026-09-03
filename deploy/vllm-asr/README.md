@@ -44,6 +44,14 @@ docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu24.04 nvidia-smi
 
 If this fails on Docker VMM, switch the backend to WSL 2 and retry.
 
+### WSL2 pinned-memory requirement (UVA error)
+
+On WSL 2, recent vLLM builds gate pinned memory behind
+`VLLM_WSL2_ENABLE_PIN_MEMORY=1` (see `vllm/platforms/cuda.py`). Without it the
+engine crashes at startup with `RuntimeError: UVA is not available` even though
+`nvidia-smi` and `torch.cuda.is_available()` both work. The compose file in this
+directory already sets the variable — keep it set on any hand-run container.
+
 ## Quick start
 
 From the repository root:

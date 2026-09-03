@@ -16,6 +16,9 @@ services:
       - "${VLLM_ASR_PORT:-8000}:8000"
     environment:
       HF_HOME: /root/.cache/huggingface
+      # vLLM nightly gates pinned memory off on WSL2; without it the engine
+      # dies with "RuntimeError: UVA is not available" (vllm/platforms/cuda.py).
+      VLLM_WSL2_ENABLE_PIN_MEMORY: "1"
     volumes:
       - huggingface-cache:/root/.cache/huggingface
     shm_size: 4gb

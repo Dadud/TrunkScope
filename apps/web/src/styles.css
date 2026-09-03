@@ -60,8 +60,10 @@ button, input, select, textarea {
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
+  position: relative;
   z-index: 50;
   gap: 12px;
+  min-width: 0;
 }
 
 .header-left {
@@ -151,14 +153,17 @@ button, input, select, textarea {
   display: flex;
   align-items: center;
   gap: 16px;
-  flex: 1;
-  max-width: 680px;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
   justify-content: center;
 }
 
 .search-bar-wrapper {
   position: relative;
   width: 280px;
+  min-width: 120px;
+  flex-shrink: 1;
   display: flex;
   align-items: center;
 }
@@ -205,6 +210,14 @@ button, input, select, textarea {
   padding: 2px;
   border-radius: 6px;
   border: 1px solid var(--border-dim);
+  flex-shrink: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.category-filter-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .cat-tab {
@@ -220,6 +233,7 @@ button, input, select, textarea {
   display: flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
   transition: all 0.15s;
 }
 
@@ -242,6 +256,8 @@ button, input, select, textarea {
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
 
 /* Master Audio Widget */
@@ -412,6 +428,31 @@ button, input, select, textarea {
 .style-toggles button.active {
   background: rgba(56, 189, 248, 0.2);
   color: var(--accent-cyan);
+}
+
+.map-tool-btn {
+  background: rgba(10, 15, 24, 0.85);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-bright);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+}
+
+.map-tool-btn:hover {
+  color: var(--text-main);
+}
+
+.map-tool-btn.active {
+  background: rgba(56, 189, 248, 0.2);
+  color: var(--accent-cyan);
+  border-color: rgba(56, 189, 248, 0.4);
 }
 
 .home-btn {

@@ -32,6 +32,17 @@ export type SummaryModelDiscoveryInput = {
   summaryProvider?: string;
   summaryApiKey?: string;
 };
+async function discoveryError(response: Response): Promise<string> {
+  if (response.status === 401) return "Administrator login required";
+  let detail = "";
+  try {
+    detail = (await response.text()).trim();
+  } catch {
+    detail = "";
+  }
+  const suffix = detail ? `: ${detail.slice(0, 240)}` : "";
+  return `Model discovery failed (${response.status})${suffix}`;
+}
 export async function discoverTranscribeModels(
   overrides?: TranscribeModelDiscoveryInput,
 ): Promise<DiscoveredModels> {
@@ -41,7 +52,7 @@ export async function discoverTranscribeModels(
     headers: overrides ? { "content-type": "application/json" } : undefined,
     body: overrides ? JSON.stringify(overrides) : undefined,
   });
-  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `Model discovery failed (${response.status})`);
+  if (!response.ok) throw new Error(await discoveryError(response));
   return response.json() as Promise<DiscoveredModels>;
 }
 export async function discoverSummaryModels(
@@ -53,7 +64,7 @@ export async function discoverSummaryModels(
     headers: overrides ? { "content-type": "application/json" } : undefined,
     body: overrides ? JSON.stringify(overrides) : undefined,
   });
-  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `Model discovery failed (${response.status})`);
+  if (!response.ok) throw new Error(await discoveryError(response));
   return response.json() as Promise<DiscoveredModels>;
 }
 export async function getTranscribeStatus(): Promise<IntegrationStatus> { const response = await fetch("/api/v1/integrations/transcribe"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<IntegrationStatus>; }
