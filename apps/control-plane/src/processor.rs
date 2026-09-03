@@ -201,12 +201,15 @@ async fn notify_discord(client: &Client, state: &AppState, call: &Call, summary:
     });
     let haystack = format!(
         "{} {} {} {}",
-        call.talkgroup_label, call.category, summary, call.transcript.as_deref().unwrap_or("")
+        call.talkgroup_label,
+        call.category,
+        summary,
+        call.transcript.as_deref().unwrap_or("")
     )
     .to_lowercase();
-    let matched_rule = keyword_rules.iter().find(|rule| {
-        rule.enabled && haystack.contains(&rule.keyword.to_lowercase())
-    });
+    let matched_rule = keyword_rules
+        .iter()
+        .find(|rule| rule.enabled && haystack.contains(&rule.keyword.to_lowercase()));
     let target_webhook = talkgroup_webhook
         .map(|rule| rule.webhook_url.clone())
         .or_else(|| {

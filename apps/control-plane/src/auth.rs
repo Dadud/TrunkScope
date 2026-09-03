@@ -62,7 +62,11 @@ fn credentials() -> Option<StoredCredentials> {
 fn insecure_mode() -> bool {
     ["TRUNKSCOPE_LOCAL_ONLY", "TRUNKSCOPE_INSECURE_MODE"]
         .iter()
-        .any(|key| std::env::var(key).map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false))
+        .any(|key| {
+            std::env::var(key)
+                .map(|v| v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        })
 }
 
 pub async fn status() -> Json<AuthStatus> {
@@ -200,7 +204,11 @@ pub async fn login(
 
 pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if insecure_mode() {
-        return Json(SessionResponse { username: "local".to_owned(), role: "administrator" }).into_response();
+        return Json(SessionResponse {
+            username: "local".to_owned(),
+            role: "administrator",
+        })
+        .into_response();
     }
     let Some(token) = cookie(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();

@@ -42,15 +42,14 @@ pub fn hydrate(state: &Arc<AppState>) {
         warn!("sqlite open failed during hydrate");
         return;
     };
-    let mut statement = match connection.prepare(
-        "SELECT payload FROM calls ORDER BY started_at DESC LIMIT 1000",
-    ) {
-        Ok(stmt) => stmt,
-        Err(error) => {
-            warn!(%error, "sqlite hydrate query failed");
-            return;
-        }
-    };
+    let mut statement =
+        match connection.prepare("SELECT payload FROM calls ORDER BY started_at DESC LIMIT 1000") {
+            Ok(stmt) => stmt,
+            Err(error) => {
+                warn!(%error, "sqlite hydrate query failed");
+                return;
+            }
+        };
     let rows = statement.query_map([], |row| row.get::<_, String>(0));
     let Ok(rows) = rows else {
         return;
@@ -107,10 +106,7 @@ pub fn delete_calls(ids: &[uuid::Uuid]) {
         return;
     };
     for id in ids {
-        let _ = connection.execute(
-            "DELETE FROM calls WHERE id = ?1",
-            params![id.to_string()],
-        );
+        let _ = connection.execute("DELETE FROM calls WHERE id = ?1", params![id.to_string()]);
     }
 }
 
@@ -120,9 +116,7 @@ pub fn purge_before(cutoff: chrono::DateTime<chrono::Utc>) -> Vec<uuid::Uuid> {
         return Vec::new();
     };
     let cutoff = cutoff.to_rfc3339();
-    let Ok(mut statement) =
-        connection.prepare("SELECT id FROM calls WHERE started_at < ?1")
-    else {
+    let Ok(mut statement) = connection.prepare("SELECT id FROM calls WHERE started_at < ?1") else {
         return Vec::new();
     };
     let rows = statement.query_map(params![cutoff], |row| row.get::<_, String>(0));
@@ -139,8 +133,7 @@ pub fn export_json_backup(path: &Path) {
     let Ok(connection) = Connection::open(db) else {
         return;
     };
-    let Ok(mut statement) =
-        connection.prepare("SELECT payload FROM calls ORDER BY started_at ASC")
+    let Ok(mut statement) = connection.prepare("SELECT payload FROM calls ORDER BY started_at ASC")
     else {
         return;
     };

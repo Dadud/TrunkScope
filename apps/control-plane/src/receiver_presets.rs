@@ -1,5 +1,5 @@
-﻿use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use trunkscope_domain::{Receiver, ReceiverDriver};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,7 +209,9 @@ pub fn default_gain_settings(driver: ReceiverDriver, gain_db: f32) -> Value {
                 "VGA": ((g * 0.37).round() as i64).clamp(0, 15),
             })
         }
-        ReceiverDriver::HackRf => json!({"LNA": gain.max(0).min(40), "VGA": gain.max(0).min(62), "AMP": 0}),
+        ReceiverDriver::HackRf => {
+            json!({"LNA": gain.max(0).min(40), "VGA": gain.max(0).min(62), "AMP": 0})
+        }
         ReceiverDriver::PlutoSdr | ReceiverDriver::LimeSdr => json!({"hardwaregain": gain}),
         ReceiverDriver::BladeRf => json!({"gain": gain}),
         ReceiverDriver::GenericSoapy | ReceiverDriver::Simulator => json!({"gain": gain}),
@@ -251,7 +253,9 @@ pub fn default_capabilities(driver: ReceiverDriver) -> trunkscope_domain::Receiv
         ReceiverDriver::Sdrplay => ReceiverCapabilities {
             minimum_frequency_hz: 1_000,
             maximum_frequency_hz: 2_000_000_000,
-            sample_rates_hz: vec![500_000, 1_000_000, 2_000_000, 4_000_000, 6_000_000, 8_000_000, 10_000_000],
+            sample_rates_hz: vec![
+                500_000, 1_000_000, 2_000_000, 4_000_000, 6_000_000, 8_000_000, 10_000_000,
+            ],
             maximum_bandwidth_hz: 8_000_000,
             supports_agc: true,
             gain_elements: vec!["IFGR".into(), "RFGR".into()],
@@ -259,7 +263,9 @@ pub fn default_capabilities(driver: ReceiverDriver) -> trunkscope_domain::Receiv
         ReceiverDriver::RtlSdr => ReceiverCapabilities {
             minimum_frequency_hz: 24_000_000,
             maximum_frequency_hz: 1_766_000_000,
-            sample_rates_hz: vec![250_000, 1_024_000, 1_400_000, 1_800_000, 1_920_000, 2_048_000, 2_400_000],
+            sample_rates_hz: vec![
+                250_000, 1_024_000, 1_400_000, 1_800_000, 1_920_000, 2_048_000, 2_400_000,
+            ],
             maximum_bandwidth_hz: 2_400_000,
             supports_agc: true,
             gain_elements: vec!["TUNER".into()],
@@ -345,7 +351,10 @@ mod tests {
             let settings = default_gain_settings(ReceiverDriver::Airspy, gain);
             for element in ["LNA", "MIX", "VGA"] {
                 let value = settings[element].as_i64().unwrap();
-                assert!((0..=15).contains(&value), "{element}={value} at gain {gain}");
+                assert!(
+                    (0..=15).contains(&value),
+                    "{element}={value} at gain {gain}"
+                );
             }
         }
         let at_30 = default_gain_settings(ReceiverDriver::Airspy, 30.0);

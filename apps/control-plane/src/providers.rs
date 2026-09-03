@@ -212,16 +212,17 @@ pub async fn summarize(
             Ok(response.response.trim().to_owned())
         }
         "anthropic" => {
-            let request = client.post(url).header("anthropic-version", "2023-06-01").json(
-                &AnthropicRequest {
+            let request = client
+                .post(url)
+                .header("anthropic-version", "2023-06-01")
+                .json(&AnthropicRequest {
                     model,
                     max_tokens: 512,
                     messages: vec![ChatMessage {
                         role: "user",
                         content: prompt.to_string(),
                     }],
-                },
-            );
+                });
             let request = match creds.auth {
                 ProviderAuth::Bearer => request.header("x-api-key", creds.api_key),
                 ProviderAuth::ApiKeyHeader { ref header } => request.header(header, creds.api_key),
@@ -293,10 +294,7 @@ pub async fn geocode(
         "google" => {
             let response = client
                 .get("https://maps.googleapis.com/maps/api/geocode/json")
-                .query(&[
-                    ("address", hint),
-                    ("key", api_key.as_str()),
-                ])
+                .query(&[("address", hint), ("key", api_key.as_str())])
                 .send()
                 .await
                 .ok()?
@@ -366,10 +364,7 @@ pub async fn geocode(
     })
 }
 
-fn parse_lat_lon_label(
-    response: &[serde_json::Value],
-    hint: &str,
-) -> Option<(f64, f64, String)> {
+fn parse_lat_lon_label(response: &[serde_json::Value], hint: &str) -> Option<(f64, f64, String)> {
     let first = response.first()?;
     let latitude = first
         .get("lat")
@@ -473,10 +468,7 @@ async fn fetch_model_catalog(
         .await
         .map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(format!(
-            "model catalog returned {}",
-            response.status()
-        ));
+        return Err(format!("model catalog returned {}", response.status()));
     }
     let payload = response
         .json::<serde_json::Value>()
@@ -620,7 +612,9 @@ pub async fn llm_location_hint(
     let prompt = format!(
         "Extract only a street address or intersection mentioned in this radio transcript. Reply with just the location text, or NONE if none is present.\n\nTranscript: {transcript}"
     );
-    let hint = summarize(client, settings, transcript, &prompt).await.ok()?;
+    let hint = summarize(client, settings, transcript, &prompt)
+        .await
+        .ok()?;
     let trimmed = hint.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
         None
@@ -641,14 +635,17 @@ mod tests {
 
     #[test]
     fn detects_two_tone_language() {
-        assert!(detect_two_tone_dispatch("Station 3 was toned out for a medical."));
+        assert!(detect_two_tone_dispatch(
+            "Station 3 was toned out for a medical."
+        ));
         assert!(!detect_two_tone_dispatch("Routine traffic stop."));
     }
 
     #[test]
     fn derives_openai_models_catalog_from_transcribe_url() {
         assert_eq!(
-            openai_models_catalog_url("http://192.168.1.105:8000/v1/audio/transcriptions").as_deref(),
+            openai_models_catalog_url("http://192.168.1.105:8000/v1/audio/transcriptions")
+                .as_deref(),
             Some("http://192.168.1.105:8000/v1/models")
         );
     }
@@ -669,6 +666,9 @@ mod tests {
             vec!["Qwen/Qwen3-ASR-1.7B".to_string()]
         );
         let ollama = serde_json::json!({"models":[{"name":"llama3.2:3b"}]});
-        assert_eq!(parse_ollama_models(&ollama), vec!["llama3.2:3b".to_string()]);
+        assert_eq!(
+            parse_ollama_models(&ollama),
+            vec!["llama3.2:3b".to_string()]
+        );
     }
 }

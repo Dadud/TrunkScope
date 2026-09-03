@@ -26,8 +26,7 @@ fn run_once(state: &Arc<AppState>) {
         .clone();
     let now = chrono::Utc::now();
     let audio_cutoff = now - chrono::Duration::days(settings.audio_retention_days as i64);
-    let transcript_cutoff =
-        now - chrono::Duration::days(settings.transcript_retention_days as i64);
+    let transcript_cutoff = now - chrono::Duration::days(settings.transcript_retention_days as i64);
     let metadata_cutoff = now - chrono::Duration::days(settings.metadata_retention_days as i64);
     let calls_root = std::env::var("TRUNKSCOPE_CALLS_PATH")
         .map(PathBuf::from)
@@ -70,7 +69,10 @@ fn run_once(state: &Arc<AppState>) {
     drop(calls);
     if !removed_ids.is_empty() {
         sqlite::delete_calls(&removed_ids);
-        info!(count = removed_ids.len(), "retention worker purged expired calls");
+        info!(
+            count = removed_ids.len(),
+            "retention worker purged expired calls"
+        );
     }
     let export_path = calls_root
         .parent()
