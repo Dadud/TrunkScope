@@ -10,9 +10,13 @@ instead when crossing networks, and never port-forward it from the internet.
 ## RTL-SDR and Airspy on Linux
 
 ```bash
-docker compose -f deploy/receiver-node/compose.yml up -d --build
+SOAPYREMOTE_BIND=0.0.0.0:55132 docker compose -f deploy/receiver-node/compose.yml up -d --build
 SoapySDRUtil --find="remote=RECEIVER_LAN_IP:55132"
 ```
+
+The bind address defaults to `0.0.0.0:55132`; restrict TCP/UDP 55132 to the
+trusted LAN or VPN with the host firewall. The main appliance verifies this
+endpoint before starting the decoder.
 
 ## SDRplay RSP1B reference node
 

@@ -32,8 +32,12 @@ pub enum ReceiverDriver {
 #[serde(rename_all = "camelCase")]
 pub enum ReceiverState {
     Offline,
+    Probing,
+    Ready,
     Idle,
     Monitoring,
+    Degraded,
+    Stopped,
     Faulted,
 }
 
@@ -123,6 +127,25 @@ pub struct Call {
     pub summary: Option<String>,
     pub location: Option<IncidentLocation>,
     pub audio: Option<AudioAsset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSession {
+    pub id: Uuid,
+    pub system_id: Uuid,
+    pub site_id: Uuid,
+    pub talkgroup_id: u32,
+    pub started_at: DateTime<Utc>,
+    pub last_activity_at: DateTime<Utc>,
+    pub call_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub audio_keys: Vec<String>,
+    pub state: String,
+    pub transcript: Option<String>,
+    pub summary: Option<String>,
+    pub location: Option<IncidentLocation>,
+    pub activity_score: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

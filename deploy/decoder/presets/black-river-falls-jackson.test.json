@@ -1,0 +1,22 @@
+{
+  "name": "Black River Falls / Jackson (test fixture)",
+  "description": "Development-only fixture transcribed from the supplied reference image. Verify the live system before production use.",
+  "region": "Jackson County, Wisconsin",
+  "site": "Black River Falls",
+  "systemId": "020",
+  "nac": "B00",
+  "protocol": "p25",
+  "controlChannelsHz": [139112500, 152112500, 152217500],
+  "voiceChannelsHz": [151047500, 152592500],
+  "talkgroups": [],
+  "receiver": {
+    "sampleRateHz": 2400000,
+    "bandwidthHz": 2000000,
+    "modulation": "qpsk",
+    "squelchDbfs": -60
+  },
+  "source": {
+    "type": "remote-soapy",
+    "notes": "The supplied reference marks 139.1125, 152.1125, and 152.2175 MHz as control channels. Confirm current control-channel assignments and talkgroups before enabling production scanning."
+  }
+}

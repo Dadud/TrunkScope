@@ -8,4 +8,7 @@ services:
     privileged: true
     volumes:
       - /dev/bus/usb:/dev/bus/usb
+    environment:
+      SOAPYREMOTE_BIND: ${SOAPYREMOTE_BIND:-0.0.0.0:55132}
+    command: ["--bind", "${SOAPYREMOTE_BIND:-0.0.0.0:55132}"]
     restart: unless-stopped

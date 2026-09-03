@@ -1,0 +1,15 @@
+{
+  "fixture": true,
+  "system": {
+    "name": "Black River Falls",
+    "protocol": "p25",
+    "controlChannelHz": 152217500,
+    "controlChannelsHz": [152112500, 152217500],
+    "nac": 2816,
+    "site": { "rfss": 1, "site": 20, "name": "Black River Falls", "county": "Jackson" }
+  },
+  "analogChannels": [
+    { "name": "Jackson County Fire", "frequencyHz": 154445000, "modulation": "NFM", "bandwidthHz": 12500, "tone": "123.0", "toneRequired": true, "squelchDb": -65 },
+    { "name": "Jackson County Law", "frequencyHz": 151062500, "modulation": "NFM", "bandwidthHz": 12500, "tone": "82.5", "toneRequired": true, "squelchDb": -65 }
+  ]
+}

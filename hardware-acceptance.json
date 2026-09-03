@@ -1,0 +1,133 @@
+{
+  "startedAt": "2026-09-03T00:16:34.400802+00:00",
+  "baseUrl": "http://192.168.1.4:18088",
+  "checks": [
+    {
+      "name": "control-plane-ready",
+      "passed": true,
+      "detail": "HTTP 200"
+    },
+    {
+      "name": "administrator-session",
+      "passed": true,
+      "detail": "credentialed session available for protected checks"
+    },
+    {
+      "name": "non-simulated-capture",
+      "passed": true,
+      "detail": {
+        "state": "delegated",
+        "detail": "Hardware stream is owned by Trunk Recorder"
+      }
+    },
+    {
+      "name": "decoder-connected",
+      "passed": true,
+      "detail": {
+        "state": "connected",
+        "detail": "Trunk Recorder process heartbeat is fresh; awaiting control/call event"
+      }
+    },
+    {
+      "name": "recording-asset",
+      "passed": true,
+      "detail": "/var/lib/trunkscope/calls/Jackson County FM/2026/9/3/900001-1788394389.901_151062500.0-call_44.wav"
+    },
+    {
+      "name": "conventional-fm-recording-observed",
+      "passed": true,
+      "detail": {
+        "count": 206,
+        "frequenciesHz": [
+          151062500,
+          154445000
+        ]
+      }
+    },
+    {
+      "name": "receiver-inventory",
+      "passed": true,
+      "detail": "1 receiver(s)"
+    },
+    {
+      "name": "capabilities-present",
+      "passed": true,
+      "detail": {
+        "minimumFrequencyHz": 1000000,
+        "maximumFrequencyHz": 2000000000,
+        "sampleRatesHz": [
+          2000000,
+          2048000,
+          2400000,
+          6000000
+        ],
+        "maximumBandwidthHz": 8000000,
+        "supportsAgc": true,
+        "gainElements": [
+          "IFGR",
+          "RFGR"
+        ]
+      }
+    },
+    {
+      "name": "receiver-verification",
+      "passed": false,
+      "detail": {
+        "passed": false,
+        "checks": [
+          {
+            "name": "device-profile",
+            "passed": true,
+            "detail": "Device arguments present"
+          },
+          {
+            "name": "frequency",
+            "passed": true,
+            "detail": "851012500"
+          },
+          {
+            "name": "sample-rate",
+            "passed": true,
+            "detail": "2400000"
+          },
+          {
+            "name": "stream-state",
+            "passed": true,
+            "detail": "Monitoring"
+          },
+          {
+            "name": "decoder-process",
+            "passed": true,
+            "detail": "Decoder heartbeat/socket is healthy"
+          },
+          {
+            "name": "event-ingestion",
+            "passed": false,
+            "detail": "No recent decoder event"
+          },
+          {
+            "name": "recording-file",
+            "passed": true,
+            "detail": "A readable audio asset exists"
+          }
+        ]
+      }
+    },
+    {
+      "name": "live-event-observed",
+      "passed": false,
+      "detail": {
+        "name": "event-ingestion",
+        "passed": false,
+        "detail": "No recent decoder event"
+      }
+    },
+    {
+      "name": "conversation-ledger",
+      "passed": true,
+      "detail": "500 session(s)"
+    }
+  ],
+  "finishedAt": "2026-09-03T00:17:04.484968+00:00",
+  "passed": false
+}

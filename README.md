@@ -34,8 +34,11 @@ pnpm --filter @trunkscope/web dev
 ```
 
 The API listens on `http://127.0.0.1:8080`; the UI listens on
-`http://127.0.0.1:5173`. The built-in simulator emits trunked calls so the live
-console works without radio hardware.
+`http://127.0.0.1:5173`. The Docker/Unraid UI is published on port `18088` by default. For a development-only demo, set `TRUNKSCOPE_RADIO_MODE=simulator`; production
+defaults to the hardware radiod path. The simulator emits trunked calls so the live
+console works without radio hardware. Hardware `radiod` mode currently validates
+and monitors the SDR stream; decoded calls require the central decoder profile
+described below.
 
 ## RSP1B over LAN
 
@@ -58,6 +61,8 @@ LAN or VPN and never expose it directly to the internet.
 - Audio defaults to 30-day retention; metadata defaults to 365 days.
 
 See [docs/architecture.md](docs/architecture.md) and [docs/development.md](docs/development.md).
+Operational health, lifecycle, scan-list, audio, privacy, and backup procedures are in
+[docs/operations.md](docs/operations.md).
 If Docker Desktop cannot start its Linux engine, see
 [docs/docker-troubleshooting.md](docs/docker-troubleshooting.md).
 

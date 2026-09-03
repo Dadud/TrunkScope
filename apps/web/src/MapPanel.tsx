@@ -1,10 +1,13 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FeatureCollection } from "geojson";
 import maplibregl, { type GeoJSONSource, type Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Call } from "./types";
 
-export function MapPanel({ calls }: { calls: Call[] }) {
+// Default appliance focus: Spaulding Rd / Old Hwy 54 near Pittsville, WI.
+// Persisted settings still win when the operator has selected a different home.
+export function MapPanel({ calls, center = [-90.5785, 44.3984] }: { calls: Call[]; center?: [number, number] }) {
+  const [homeCenter, setHomeCenter] = useState<[number, number]>(center);
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const geojson = (): FeatureCollection => ({
@@ -17,10 +20,14 @@ export function MapPanel({ calls }: { calls: Call[] }) {
   });
 
   useEffect(() => {
+    fetch("/api/v1/settings").then((response) => response.ok ? response.json() : undefined).then((settings: { homeLongitude: number; homeLatitude: number } | undefined) => { if (settings) setHomeCenter([settings.homeLongitude, settings.homeLatitude]); }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
     if (!container.current || map.current) return;
     const instance = new maplibregl.Map({
       container: container.current,
-      center: [-87.632, 41.884],
+      center: homeCenter,
       zoom: 11.7,
       attributionControl: false,
       style: {
@@ -37,11 +44,13 @@ export function MapPanel({ calls }: { calls: Call[] }) {
     });
     map.current = instance;
     return () => { instance.remove(); map.current = null; };
-  }, []);
+  }, [homeCenter]);
 
   useEffect(() => {
     (map.current?.getSource("calls") as GeoJSONSource | undefined)?.setData(geojson());
   }, [calls]);
+
+  useEffect(() => { map.current?.setCenter(homeCenter); }, [homeCenter]);
 
   return <div className="map" ref={container} aria-label="Incident map" />;
 }

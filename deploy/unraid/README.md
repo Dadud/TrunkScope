@@ -39,8 +39,11 @@ docker compose --env-file .env -f deploy/compose.yml config --quiet
 docker compose --env-file .env -f deploy/compose.yml up -d --build
 ```
 
-Open `http://UNRAID_LAN_IP:${TRUNKSCOPE_HTTP_PORT}` (8088 by default). The simulator should show live calls
-before any radio is connected.
+Open `http://UNRAID_LAN_IP:${TRUNKSCOPE_HTTP_PORT}` (8088 by default). A fresh
+install is intentionally simulator-backed so the UI can be smoke-tested before
+hardware is attached. For production, set the radio variables explicitly in
+`.env` and always pass `--env-file .env`; the runtime page must show `radiod`
+and a hardware device before treating calls as real RF traffic.
 
 ## Enable the RSP1B and P25 decoder
 
@@ -64,3 +67,45 @@ before any radio is connected.
 Keep TCP port 55132 restricted to the trusted LAN/VPN. SoapyRemote has no
 authentication or encryption. For Unraid backup, include the `trunkscope`
 appdata directory; it contains recordings and AI model caches.
+
+### Local-only access (no login)
+
+For an appliance reachable only on a trusted LAN/VPN, set
+`TRUNKSCOPE_LOCAL_ONLY=true` in `.env` and recreate the application services:
+
+```bash
+docker compose --env-file .env -f deploy/compose.yml up -d --force-recreate control-plane web
+```
+
+This skips the login screen and grants administrator access to anyone who can
+reach the appliance. It is disabled by default and must never be exposed to
+the public Internet.
+Before starting the hardware profile, run the SDRplay runtime preflight as root:
+
+```bash
+TRUNKSCOPE_SDRPLAY_RUNTIME=/mnt/user/appdata/trunkscope/sdrplay \
+  sh /mnt/user/appdata/trunkscope/app/scripts/ensure-sdrplay-runtime.sh
+```
+
+This creates the missing `libsdrplay_api.so.3` compatibility link when the
+vendor runtime only includes a versioned library. The operation is idempotent.
+
+When transferring prebuilt images from Docker Desktop, regenerate each archive
+after every build (`docker save IMAGE:latest | gzip > IMAGE.tar.gz`) before
+copying it to Unraid. `docker compose up --no-build` only uses images already
+loaded on Unraid and cannot see newer local source or image layers.
+
+To deploy directly from a Windows or Linux checkout, use the synchronization
+harness. It uploads the complete checkout (excluding build caches and `.env`),
+then builds and restarts the two application images on Unraid:
+
+```bash
+export TRUNKSCOPE_SSH_HOST=192.168.1.4
+export TRUNKSCOPE_SSH_USER=root
+export TRUNKSCOPE_SSH_PASSWORD='set-this-in-your-shell-only'
+python3 scripts/unraid-deploy.py
+```
+
+The command fails if either image cannot build; it never reports a local build
+as a deployed build. Run `--no-build` only when you intentionally want to sync
+source without restarting the appliance.

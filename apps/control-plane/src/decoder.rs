@@ -25,12 +25,23 @@ pub async fn status_socket(
 
 async fn consume_status(mut socket: WebSocket, state: Arc<AppState>) {
     info!("Trunk Recorder status connection established");
+    *state
+        .decoder_connected
+        .write()
+        .expect("decoder lock poisoned") = true;
     while let Some(message) = socket.next().await {
+        *state
+            .decoder_last_event
+            .write()
+            .expect("decoder lock poisoned") = Some(Utc::now());
         match message {
-            Ok(Message::Text(payload)) => match serde_json::from_str::<StatusEvent>(&payload) {
-                Ok(event) => apply_status(&state, event),
-                Err(cause) => warn!(%cause, "ignored invalid decoder status message"),
-            },
+            Ok(Message::Text(payload)) => {
+                record_control_lock(&state, &payload);
+                match serde_json::from_str::<StatusEvent>(&payload) {
+                    Ok(event) => apply_status(&state, event),
+                    Err(cause) => warn!(%cause, "ignored invalid decoder status message"),
+                }
+            }
             Ok(Message::Close(_)) => break,
             Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Binary(_)) => {}
             Err(cause) => {
@@ -39,7 +50,45 @@ async fn consume_status(mut socket: WebSocket, state: Arc<AppState>) {
             }
         }
     }
+    *state
+        .decoder_connected
+        .write()
+        .expect("decoder lock poisoned") = false;
     warn!("Trunk Recorder status connection closed");
+}
+
+fn record_control_lock(state: &AppState, payload: &str) {
+    let value = payload.to_ascii_lowercase();
+    let lock_event = (value.contains("control")
+        && (value.contains("lock") || value.contains("channel")))
+        || value.contains("controlchannel");
+    if lock_event {
+        *state
+            .decoder_control_lock
+            .write()
+            .expect("decoder lock poisoned") = Some(Utc::now());
+    }
+}
+
+/// Ingest a finalized Trunk Recorder JSON sidecar. This is also used as a
+/// durable fallback when the optional websocket status connection is briefly
+/// unavailable; the sidecar is only accepted after Trunk Recorder has closed
+/// and written the call file.
+pub fn ingest_status_payload(state: &AppState, payload: &str) -> bool {
+    match serde_json::from_str::<StatusEvent>(payload) {
+        Ok(event) => {
+            *state
+                .decoder_last_event
+                .write()
+                .expect("decoder lock poisoned") = Some(Utc::now());
+            apply_status(state, event);
+            true
+        }
+        Err(cause) => {
+            warn!(%cause, "ignored invalid decoder sidecar");
+            false
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +120,12 @@ struct DecoderCall {
     encrypted: FlexibleBool,
     #[serde(default)]
     analog: FlexibleBool,
+    #[serde(default)]
+    tone: FlexibleText,
+    #[serde(default)]
+    signal: FlexibleText,
+    #[serde(default)]
+    noise: FlexibleText,
     #[serde(default)]
     start_time: FlexibleText,
     #[serde(default)]
@@ -105,6 +160,7 @@ impl FlexibleText {
 enum FlexibleBool {
     Bool(bool),
     String(String),
+    Number(serde_json::Number),
     #[default]
     Missing,
 }
@@ -114,6 +170,7 @@ impl FlexibleBool {
         match self {
             Self::Bool(value) => *value,
             Self::String(value) => value.eq_ignore_ascii_case("true") || value == "1",
+            Self::Number(value) => value.as_i64().is_some_and(|number| number != 0),
             Self::Missing => false,
         }
     }
@@ -130,12 +187,37 @@ fn apply_status(state: &AppState, event: StatusEvent) {
     };
     match convert_call(state, &decoder_call, ended) {
         Some(call) if ended => {
+            update_receiver_health(state, &call, &decoder_call);
             state.upsert_call(call.clone(), CallEvent::Ended(call.clone()));
             state.enqueue_processing(call);
         }
-        Some(call) => state.upsert_call(call.clone(), CallEvent::Started(call)),
+        Some(call) => {
+            update_receiver_health(state, &call, &decoder_call);
+            state.upsert_call(call.clone(), CallEvent::Started(call));
+        }
         None => {
             warn!(decoder_call_id = %decoder_call.id.value(), "decoder call was missing required identifiers")
+        }
+    }
+}
+
+fn update_receiver_health(state: &AppState, call: &Call, source: &DecoderCall) {
+    // Conventional sidecars contain measured signal/noise values. Digital
+    // sidecars use 999 as a sentinel, so do not overwrite useful hardware
+    // telemetry with that value.
+    // Trunk Recorder uses 0/999 sentinel values for digital call signal;
+    // retain those from overwriting a real negative analog measurement.
+    if call.signal_dbfs > -200.0 && call.signal_dbfs < 0.0 {
+        if let Ok(mut receivers) = state.receivers.write() {
+            if let Some(receiver) = receivers.first_mut() {
+                receiver.health.signal_dbfs = call.signal_dbfs;
+                if let Ok(noise) = source.noise.value().parse::<f32>() {
+                    if noise.is_finite() && noise < 0.0 {
+                        receiver.health.noise_dbfs = noise;
+                    }
+                }
+                receiver.health.updated_at = Utc::now();
+            }
         }
     }
 }
@@ -146,6 +228,30 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
     let frequency = source.freq.value();
     let talkgroup_id = parse_u32(&talkgroup)?;
     let frequency_hz = frequency.parse::<f64>().ok()?.round() as u64;
+    let reported_tone = source.tone.value();
+    let tone_allowed = state
+        .systems
+        .read()
+        .ok()
+        .and_then(|systems| {
+            systems
+                .iter()
+                .find(|profile| profile.frequency_hz == Some(frequency_hz))
+                .and_then(|profile| profile.tone.clone())
+        })
+        .map(|expected| (expected, reported_tone.clone()))
+        .is_none_or(|(expected, actual)| {
+            expected.eq_ignore_ascii_case("none")
+                || (!actual.is_empty() && expected.eq_ignore_ascii_case(&actual))
+                // Trunk Recorder applies the CTCSS/DCS gate before emitting a
+                // conventional sidecar. Its sidecars do not repeat the tone,
+                // so an explicitly marked analog event with no tone field is
+                // already a trusted match.
+                || (source.analog.value() && actual.is_empty())
+        });
+    if !tone_allowed {
+        return None;
+    }
     let call_id = {
         let mut calls = state
             .decoder_calls
@@ -216,7 +322,13 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
         } else {
             EncryptionState::Clear
         },
-        signal_dbfs: 0.0,
+        signal_dbfs: source
+            .signal
+            .value()
+            .parse::<f32>()
+            .ok()
+            .filter(|signal| signal.is_finite() && *signal <= 0.0)
+            .unwrap_or(0.0),
         transcript: None,
         summary: None,
         location: None,
@@ -298,5 +410,92 @@ mod tests {
             calls[0].audio.as_ref().unwrap().object_key,
             "/var/lib/trunkscope/calls/2026-09-01/call-3.wav"
         );
+    }
+
+    #[test]
+    fn configured_analog_tone_rejects_mismatched_decoder_call() {
+        let state = AppState::new();
+        state
+            .systems
+            .write()
+            .unwrap()
+            .push(crate::state::SystemProfile {
+                id: Uuid::new_v4(),
+                name: "FM".into(),
+                protocol: "analog-fm".into(),
+                control_channel_hz: None,
+                control_channels_hz: Vec::new(),
+                nac: None,
+                frequency_hz: Some(166550000),
+                bandwidth_hz: Some(12500),
+                modulation: Some("NFM".into()),
+                squelch_db: Some(-65.0),
+                tone: Some("100.0".into()),
+                deviation_hz: Some(2500),
+                step_hz: Some(12500),
+                dwell_ms: Some(2500),
+                sites: Vec::new(),
+            });
+        let event: StatusEvent = serde_json::from_str(r#"{"type":"call_start","call":{"id":"tone-1","freq":"166550000","talkgroup":"1","analog":true,"tone":"123.0"}}"#).unwrap();
+        apply_status(&state, event);
+        assert!(state.calls.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn configured_dcs_tone_accepts_matching_decoder_call() {
+        let state = AppState::new();
+        state
+            .systems
+            .write()
+            .unwrap()
+            .push(crate::state::SystemProfile {
+                id: Uuid::new_v4(),
+                name: "DCS FM".into(),
+                protocol: "analog-fm".into(),
+                control_channel_hz: None,
+                control_channels_hz: Vec::new(),
+                nac: None,
+                frequency_hz: Some(166550000),
+                bandwidth_hz: Some(12500),
+                modulation: Some("NFM".into()),
+                squelch_db: Some(-65.0),
+                tone: Some("D023N".into()),
+                deviation_hz: Some(2500),
+                step_hz: Some(12500),
+                dwell_ms: Some(2500),
+                sites: Vec::new(),
+            });
+        let event: StatusEvent = serde_json::from_str(
+            r#"{"type":"call_start","call":{"id":"dcs-1","freq":"166550000","talkgroup":"1","analog":true,"tone":"D023N"}}"#,
+        )
+        .unwrap();
+        apply_status(&state, event);
+        assert_eq!(state.calls.read().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn p25_call_lifecycle_archives_and_enqueues_processing() {
+        let state = AppState::new();
+        let mut processing = state.processing.subscribe();
+        let start: StatusEvent = serde_json::from_str(
+            r#"{"type":"call_start","call":{"id":"p25-e2e","freq":"851012500","talkgroup":"1001","shortName":"Dispatch","startTime":"1710000000"}}"#,
+        )
+        .unwrap();
+        apply_status(&state, start);
+        let end: StatusEvent = serde_json::from_str(
+            r#"{"type":"call_end","call":{"id":"p25-e2e","freq":"851012500","talkgroup":"1001","shortName":"Dispatch","startTime":"1710000000","stopTime":"1710000004","filename":"2026-09-01/p25-e2e.wav"}}"#,
+        )
+        .unwrap();
+        apply_status(&state, end);
+        let queued = tokio::time::timeout(std::time::Duration::from_secs(1), processing.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            queued.id.to_string(),
+            state.calls.read().unwrap()[0].id.to_string()
+        );
+        assert_eq!(queued.category, "P25 Phase 1");
+        assert_eq!(queued.state, CallState::Complete);
     }
 }

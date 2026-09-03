@@ -1,4 +1,4 @@
-export type ReceiverState = "offline" | "idle" | "monitoring" | "faulted";
+export type ReceiverState = "offline" | "probing" | "ready" | "idle" | "monitoring" | "degraded" | "stopped" | "faulted";
 
 export interface Receiver {
   id: string;

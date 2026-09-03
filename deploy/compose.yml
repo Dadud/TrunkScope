@@ -25,7 +25,20 @@ services:
       MINIO_ROOT_PASSWORD: ${TRUNKSCOPE_MINIO_PASSWORD:-change-me-before-exposing}
     volumes:
       - ${TRUNKSCOPE_MINIO_DATA:-minio-data}:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
+
+  storage-init:
+    image: alpine:3.20
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /calls && chown -R 999:999 /calls"]
+    volumes:
+      - ${TRUNKSCOPE_CALLS_DATA:-calls-data}:/calls
+    restart: "no"
 
   control-plane:
     build:
@@ -33,10 +46,24 @@ services:
       dockerfile: apps/control-plane/Dockerfile
     environment:
       TRUNKSCOPE_BIND: 0.0.0.0:8080
+      TRUNKSCOPE_IMAGE_VERSION: ${TRUNKSCOPE_IMAGE_VERSION:-dev}
       TRUNKSCOPE_DATABASE_URL: postgresql://${TRUNKSCOPE_POSTGRES_USER:-trunkscope}:${TRUNKSCOPE_POSTGRES_PASSWORD:-change-me-before-exposing}@postgres:5432/${TRUNKSCOPE_POSTGRES_DB:-trunkscope}
       TRUNKSCOPE_STORAGE_PATH: /var/lib/trunkscope/audio
-      TRUNKSCOPE_SIMULATOR: ${TRUNKSCOPE_SIMULATOR:-true}
-      TRUNKSCOPE_RADIO_MODE: ${TRUNKSCOPE_RADIO_MODE:-simulator}
+      TRUNKSCOPE_SETTINGS_PATH: /var/lib/trunkscope/audio/settings.json
+      TRUNKSCOPE_SYSTEMS_PATH: /var/lib/trunkscope/audio/systems.json
+      TRUNKSCOPE_SCAN_LISTS_PATH: /var/lib/trunkscope/audio/scan-lists.json
+      TRUNKSCOPE_AUDIT_PATH: /var/lib/trunkscope/audio/audit.json
+      TRUNKSCOPE_SESSIONS_PATH: /var/lib/trunkscope/audio/conversation-sessions.json
+      TRUNKSCOPE_RECEIVERS_PATH: /var/lib/trunkscope/audio/receivers.json
+      # Optional site-name substring filter for imported trunked systems.
+      # Leave empty for all persisted sites; Black River Falls is used by the
+      # tested Jackson County appliance override.
+      TRUNKSCOPE_SITE_FILTER: ${TRUNKSCOPE_SITE_FILTER:-}
+      TRUNKSCOPE_AUTH_PATH: /var/lib/trunkscope/audio/auth.json
+      TRUNKSCOPE_LOCAL_ONLY: ${TRUNKSCOPE_LOCAL_ONLY:-false}
+      TRUNKSCOPE_RETUNE_FILE: /tmp/trunkscope-retune-frequency
+      # Hardware is the production default; use TRUNKSCOPE_RADIO_MODE=simulator only for CI/demo runs.
+      TRUNKSCOPE_RADIO_MODE: ${TRUNKSCOPE_RADIO_MODE:-radiod}
       TRUNKSCOPE_RADIOD_PATH: /usr/local/bin/trunkscope-radiod
       TRUNKSCOPE_RADIO_DEVICE: ${TRUNKSCOPE_RADIO_DEVICE:-}
       TRUNKSCOPE_RADIO_FREQUENCY_HZ: ${TRUNKSCOPE_RADIO_FREQUENCY_HZ:-0}
@@ -47,10 +74,15 @@ services:
       TRUNKSCOPE_RADIO_PPM: ${TRUNKSCOPE_RADIO_PPM:-0}
       TRUNKSCOPE_CALLS_PATH: /var/lib/trunkscope/calls
       TRUNKSCOPE_AI_ENABLED: ${TRUNKSCOPE_AI_ENABLED:-false}
+      TRUNKSCOPE_AI_WORKERS: ${TRUNKSCOPE_AI_WORKERS:-4}
       TRUNKSCOPE_TRANSCRIBE_URL: ${TRUNKSCOPE_TRANSCRIBE_URL:-http://speaches:8000/v1/audio/transcriptions}
       TRUNKSCOPE_TRANSCRIBE_MODEL: ${TRUNKSCOPE_TRANSCRIBE_MODEL:-Systran/faster-distil-whisper-small.en}
       TRUNKSCOPE_SUMMARY_URL: ${TRUNKSCOPE_SUMMARY_URL:-http://ollama:11434/api/generate}
       TRUNKSCOPE_SUMMARY_MODEL: ${TRUNKSCOPE_SUMMARY_MODEL:-llama3.2:3b}
+      # Optional: finalized clear-call summaries only; unset by default.
+      TRUNKSCOPE_DISCORD_WEBHOOK_URL: ${TRUNKSCOPE_DISCORD_WEBHOOK_URL:-}
+      # Optional geocoder endpoint (for example a self-hosted Nominatim proxy).
+      TRUNKSCOPE_GEOCODER_URL: ${TRUNKSCOPE_GEOCODER_URL:-}
       TRUNKSCOPE_PUBLIC_FEED: "false"
       TRUNKSCOPE_AUDIO_TOKEN: ${TRUNKSCOPE_AUDIO_TOKEN:-}
       RUST_LOG: ${RUST_LOG:-trunkscope=info,tower_http=info}
@@ -58,14 +90,21 @@ services:
       SOAPY_SDR_PLUGIN_PATH: /opt/sdrplay/lib/SoapySDR/modules0.8
     volumes:
       - ${TRUNKSCOPE_AUDIO_DATA:-audio-data}:/var/lib/trunkscope/audio
-      - ${TRUNKSCOPE_CALLS_DATA:-calls-data}:/var/lib/trunkscope/calls:ro
+      - ${TRUNKSCOPE_CALLS_DATA:-calls-data}:/var/lib/trunkscope/calls
       - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
     devices:
       - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
     ipc: host
+    shm_size: 256m
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     depends_on:
       postgres:
         condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/v1/health"]
       interval: 10s
@@ -78,10 +117,16 @@ services:
       context: ..
       dockerfile: apps/web/Dockerfile
     ports:
-      - "${TRUNKSCOPE_HTTP_PORT:-8088}:80"
+      # 18088 avoids the common Unraid SABnzbd/8088 collision.
+      - "${TRUNKSCOPE_HTTP_PORT:-18088}:80"
     depends_on:
       control-plane:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   radiod-tools:
@@ -108,23 +153,43 @@ services:
       - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
     devices:
       - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
+    # SDRplay's vendor API uses USB isochronous transfers and needs direct
+    # usbfs access; this is isolated to the vendor service, not the web/API.
+    privileged: true
     ipc: host
+    shm_size: 256m
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     environment:
       LD_LIBRARY_PATH: /opt/sdrplay/lib
     restart: unless-stopped
 
   decoder:
-    profiles: ["decoder"]
     image: ${TRUNKSCOPE_DECODER_IMAGE:-robotastic/trunk-recorder:latest}
-    command: ["trunk-recorder", "--config=/config/config.json"]
+    command: ["trunk-recorder", "--config=/generated/decoder/config.json"]
     volumes:
+      - ${TRUNKSCOPE_AUDIO_DATA:-audio-data}:/generated:ro
       - ./decoder:/config:ro
       - ${TRUNKSCOPE_CALLS_DATA:-calls-data}:/var/lib/trunkscope/calls
+      - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
+    environment:
+      LD_LIBRARY_PATH: /opt/sdrplay/lib
+      SOAPY_SDR_PLUGIN_PATH: /opt/sdrplay/lib/SoapySDR/modules0.8
+    ipc: host
     devices:
       - ${TRUNKSCOPE_USB_DEVICES:-/dev/null:/dev/null}
     depends_on:
       control-plane:
         condition: service_healthy
+    healthcheck:
+      # A mounted config alone is not proof that the decoder is running.
+      # Check both the generated profile and the foreground process command.
+      test: ["CMD-SHELL", "test -f /generated/decoder/config.json && tr '\\0' ' ' < /proc/1/cmdline | grep -q trunk-recorder && touch /var/lib/trunkscope/calls/.decoder-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
     restart: unless-stopped
 
   speaches:
@@ -132,6 +197,11 @@ services:
     image: ghcr.io/speaches-ai/speaches:latest-cpu
     volumes:
       - ${TRUNKSCOPE_HUGGINGFACE_DATA:-huggingface-cache}:/home/ubuntu/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   ollama:
@@ -139,6 +209,11 @@ services:
     image: ollama/ollama:latest
     volumes:
       - ${TRUNKSCOPE_OLLAMA_DATA:-ollama-data}:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
 volumes:

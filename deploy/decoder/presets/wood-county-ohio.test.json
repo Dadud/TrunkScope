@@ -1,0 +1,18 @@
+{
+  "name": "Wood County Ohio (test fixture)",
+  "description": "Development-only starter preset. Verify current licensing, control channels, and talkgroups before use.",
+  "region": "Wood County, Ohio",
+  "protocol": "p25",
+  "controlChannelsHz": [851012500, 852012500],
+  "talkgroups": [],
+  "receiver": {
+    "sampleRateHz": 2400000,
+    "bandwidthHz": 2000000,
+    "modulation": "qpsk",
+    "squelchDbfs": -60
+  },
+  "source": {
+    "type": "remote-soapy",
+    "notes": "Replace the receiver address and confirm these frequencies against a current authoritative database before enabling the decoder."
+  }
+}

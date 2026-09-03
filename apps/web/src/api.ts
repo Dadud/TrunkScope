@@ -1,17 +1,47 @@
-import type { CallEvent, Snapshot } from "./types";
+import type { CallEvent, Receiver, Snapshot } from "./types";
 
-export type AuthStatus = { enabled: boolean };
+export type AuthStatus = { enabled: boolean; setupRequired?: boolean; localOnly?: boolean };
 export type Session = { username: string; role: string };
+export type RuntimeStatus = { decoderConnected: boolean; decoderLastEvent?: string; receiverCount: number; activeCallCount: number; receiverStates?: string[]; aiEnabled?: boolean; aiWorkerStatus?: string; storagePath?: string; activeScanList?: string; storageHealthy?: boolean; queueBacklog?: number; lastEvent?: string; persistenceConnected?: boolean };
+export type Diagnostics = { capture: { state: string; detail: string }; decoder: { state: string; detail: string }; recording: { state: string; detail: string }; ingestion: { state: string; detail: string }; ai: { state: string; detail: string }; simulated: boolean; lastEvent?: string; lastAudioFile?: string; failureReason?: string; aiFailureReason?: string; imageVersion?: string; decoderControlLockAgeSeconds?: number };
+export async function getDiagnostics(): Promise<Diagnostics> { const response = await fetch("/api/v1/diagnostics"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<Diagnostics>; }
+export type AppSettings = { schemaVersion?: number; homeLabel: string; homeLatitude: number; homeLongitude: number; radioMode: string; radioDevice: string; radioFrequencyHz: number; radioSampleRateHz: number; radioBandwidthHz?: number; radioGainDb?: number; radioAgc: boolean; radioPpm: number; aiEnabled: boolean; aiProfile: string; transcribeUrl: string; transcribeModel: string; vadEnabled: boolean; summaryModel: string; summaryRefreshMinutes?: number; publicFeedEnabled: boolean; publicAllowedTalkgroups?: string[]; publicFeedDelaySeconds: number; exposeTranscripts: boolean; exposeRadioIds: boolean; exposePreciseLocations: boolean; audioRetentionDays?: number; transcriptRetentionDays?: number; metadataRetentionDays?: number };
+export async function getSettings(): Promise<AppSettings> { const response = await fetch("/api/v1/settings"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<AppSettings>; }
+export async function saveSettings(settings: AppSettings): Promise<AppSettings> { const response = await fetch("/api/v1/settings", { method: "PUT", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(settings) }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : response.status === 400 ? "Check the coordinates and home label" : `API returned ${response.status}`); return response.json() as Promise<AppSettings>; }
+export async function getRuntime(): Promise<RuntimeStatus> { const response = await fetch("/api/v1/runtime"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<RuntimeStatus>; }
+export async function receiverAction(id: string, action: "probe" | "start" | "stop" | "restart"): Promise<Receiver> { const response = await fetch(`/api/v1/receivers/${id}/${action}`, { method: "POST", credentials: "include" }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`); return response.json() as Promise<Receiver>; }
+export type ReceiverInput = Pick<Receiver, "label" | "driver" | "serial" | "centerFrequencyHz" | "sampleRateHz" | "gainDb" | "ppm">;
+export async function createReceiver(input: ReceiverInput): Promise<Receiver> { const response = await fetch("/api/v1/receivers", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(input) }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`); return response.json() as Promise<Receiver>; }
+export async function updateReceiver(id: string, input: ReceiverInput): Promise<Receiver> { const response = await fetch(`/api/v1/receivers/${id}`, { method: "PUT", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(input) }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`); return response.json() as Promise<Receiver>; }
+export async function deleteReceiver(id: string): Promise<void> { const response = await fetch(`/api/v1/receivers/${id}`, { method: "DELETE", credentials: "include" }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`); }
 export async function getAuthStatus(): Promise<AuthStatus> { const response = await fetch("/api/v1/auth/status"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<AuthStatus>; }
-export async function login(username: string, password: string): Promise<Session> { const response = await fetch("/api/v1/auth/login", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify({ username, password }) }); if (!response.ok) throw new Error(response.status === 401 ? "Invalid username or password" : `Login unavailable (${response.status})`); return response.json() as Promise<Session>; }
+export async function login(username: string, password: string): Promise<Session> { const response = await fetch("/api/v1/auth/login", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify({ username: username.trim(), password }) }); if (!response.ok) throw new Error(response.status === 401 ? "Invalid username or password" : response.status === 503 ? "Administrator credentials are not configured; finish first-run setup" : response.status >= 500 ? "Login service is unavailable; check the control-plane health" : `Login unavailable (${response.status})`); return response.json() as Promise<Session>; }
+export async function setupAdmin(username: string, password: string): Promise<void> { const response = await fetch("/api/v1/auth/setup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username, password }) }); if (!response.ok) throw new Error(response.status === 400 ? "Use a username and a password of at least 12 characters" : response.status === 409 ? "Administrator credentials are already configured" : `Setup unavailable (${response.status})`); }
+export async function changePassword(username: string, password: string): Promise<void> { const response = await fetch("/api/v1/auth/password", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify({ username, password }) }); if (!response.ok) throw new Error(response.status === 400 ? "Password must be at least 12 characters" : response.status === 401 ? "Administrator login required" : `Password change unavailable (${response.status})`); }
 export async function getSession(): Promise<Session | undefined> { const response = await fetch("/api/v1/auth/me", { credentials: "include" }); return response.ok ? response.json() as Promise<Session> : undefined; }
+export async function logout(): Promise<void> { await fetch("/api/v1/auth/logout", { method: "POST", credentials: "include" }); }
 
-export type SystemProfile = { id: string; name: string; protocol: string; controlChannelHz?: number; nac?: number; frequencyHz?: number; bandwidthHz?: number; modulation?: string; squelchDb?: number; tone?: string; deviationHz?: number; stepHz?: number; dwellMs?: number };
+export type SystemSite = { id: string; name: string; controlChannelsHz: number[]; voiceChannelsHz: number[]; latitude?: number; longitude?: number };
+export type SystemProfile = { id: string; name: string; protocol: string; controlChannelHz?: number; controlChannelsHz?: number[]; nac?: number; frequencyHz?: number; bandwidthHz?: number; modulation?: string; squelchDb?: number; tone?: string; deviationHz?: number; stepHz?: number; dwellMs?: number; sites?: SystemSite[] };
+export type ScanChannel = { id: string; name: string; frequencyHz: number; modulation: string; bandwidthHz: number; squelchDb: number; tone?: string; toneRequired: boolean; dwellMs: number; priority: number; lockedOut: boolean };
+export type ScanList = { id: string; name: string; enabled: boolean; pauseOnActivity: boolean; resumeAfterMs: number; channels: ScanChannel[] };
+export type ConversationSession = { id: string; talkgroupId: number; callIds: string[]; state: string; transcript?: string; summary?: string; location?: { label: string; latitude: number; longitude: number; confidence: number }; audioKeys?: string[] };
+export async function confirmSessionLocation(sessionId: string, location: { label: string; latitude: number; longitude: number; confidence: number }): Promise<void> {
+  const response = await fetch(`/api/v1/operations/sessions/${encodeURIComponent(sessionId)}/location`, { method: "PUT", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(location) });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+}
+export async function getScanLists(): Promise<ScanList[]> { const response = await fetch("/api/v1/scan-lists"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<ScanList[]>; }
+export async function saveScanList(list: ScanList): Promise<ScanList> { const response = await fetch("/api/v1/scan-lists", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(list) }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`); return response.json() as Promise<ScanList>; }
 export async function getSystems(): Promise<SystemProfile[]> { const response = await fetch("/api/v1/systems"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<SystemProfile[]>; }
 export async function saveSystem(profile: Omit<SystemProfile, "id"> & { id?: string }): Promise<SystemProfile> {
-  const response = await fetch("/api/v1/systems", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: profile.id ?? "00000000-0000-0000-0000-000000000000", ...profile }) });
-  if (!response.ok) throw new Error(`API returned ${response.status}`);
+  const response = await fetch("/api/v1/systems", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify({ id: profile.id ?? "00000000-0000-0000-0000-000000000000", ...profile }) });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
   return response.json() as Promise<SystemProfile>;
+}
+export async function importTalkgroups(file: File): Promise<{ imported: boolean; rows: number; path: string }> {
+  const response = await fetch("/api/v1/imports/talkgroups", { method: "POST", headers: { "content-type": "text/csv" }, credentials: "include", body: file });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : response.status === 400 ? "Invalid talkgroup CSV" : `API returned ${response.status}`);
+  return response.json() as Promise<{ imported: boolean; rows: number; path: string }>;
 }
 
 export async function getSnapshot(signal?: AbortSignal): Promise<Snapshot> {
@@ -19,6 +49,32 @@ export async function getSnapshot(signal?: AbortSignal): Promise<Snapshot> {
   if (!response.ok) throw new Error(`API returned ${response.status}`);
   return response.json() as Promise<Snapshot>;
 }
+
+export type IncidentThread = {
+  key: string;
+  systemName: string;
+  talkgroupId: number;
+  talkgroupLabel: string;
+  category: string;
+  severity: number;
+  activityScore: number;
+  callCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  radioIds: number[];
+  locations: Array<{ label: string; latitude: number; longitude: number; confidence: number }>;
+  locationHints: string[];
+  excerpts: string[];
+};
+export type OperationsSummary = { hours: number; generatedAt: string; callCount: number; activeThreadCount: number; headline: string; aiSummary?: string; aiSummaryStatus?: string; threads: IncidentThread[] };
+export async function getOperationsSummary(hours = 4, signal?: AbortSignal): Promise<OperationsSummary> {
+  const response = await fetch(`/api/v1/operations/summary?hours=${hours}`, { signal });
+  if (!response.ok) throw new Error(`API returned ${response.status}`);
+  return response.json() as Promise<OperationsSummary>;
+}
+
+export function callAudioUrl(callId: string): string { return `/api/v1/calls/${encodeURIComponent(callId)}/audio`; }
+export function conversationAudioUrl(sessionId: string): string { return `/api/v1/operations/sessions/${encodeURIComponent(sessionId)}/audio`; }
 
 export function subscribeToCalls(
   onEvent: (event: CallEvent) => void,

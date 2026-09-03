@@ -52,8 +52,8 @@ pub fn spawn(state: Arc<AppState>) {
                 "Fire Dispatch",
                 "Structure Fire",
                 851_262_500,
-                41.884,
-                -87.632,
+                44.3984,
+                -90.5785,
             ),
             (
                 2305,

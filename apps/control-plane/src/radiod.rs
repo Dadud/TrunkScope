@@ -10,11 +10,12 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 use trunkscope_domain::{
-    Receiver, ReceiverCapabilities, ReceiverDriver, ReceiverHealth, ReceiverState,
+    AudioAsset, Call, CallEvent, CallState, EncryptionState, Receiver, ReceiverCapabilities,
+    ReceiverDriver, ReceiverHealth, ReceiverState,
 };
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::state::{AppState, ReceiverCommand};
 
 #[derive(Clone)]
 struct RadioConfig {
@@ -26,62 +27,49 @@ struct RadioConfig {
     gain_db: Option<f32>,
     agc: bool,
     ppm: f32,
+    audio_output: String,
+    squelch_dbfs: f32,
 }
 
 impl RadioConfig {
-    fn from_env() -> Result<Self> {
-        let device = env::var("TRUNKSCOPE_RADIO_DEVICE")
-            .context("TRUNKSCOPE_RADIO_DEVICE is required when TRUNKSCOPE_SIMULATOR=false")?;
-        let frequency_hz = parse_required("TRUNKSCOPE_RADIO_FREQUENCY_HZ")?;
+    fn from_settings(state: &AppState) -> Result<Self> {
+        let settings = state
+            .settings
+            .read()
+            .expect("settings lock poisoned")
+            .clone();
+        let device = if settings.radio_device.trim().is_empty() {
+            env::var("TRUNKSCOPE_RADIO_DEVICE")
+                .context("a radio device is required when hardware mode is enabled")?
+        } else {
+            settings.radio_device
+        };
+        let frequency_hz = settings.radio_frequency_hz;
         if frequency_hz == 0 {
-            bail!("TRUNKSCOPE_RADIO_FREQUENCY_HZ must be positive");
+            bail!("radio frequency must be positive");
         }
         Ok(Self {
             executable: env::var("TRUNKSCOPE_RADIOD_PATH")
                 .unwrap_or_else(|_| "/usr/local/bin/trunkscope-radiod".into()),
             device,
             frequency_hz,
-            sample_rate_hz: parse_optional("TRUNKSCOPE_RADIO_SAMPLE_RATE_HZ")?.unwrap_or(2_400_000),
-            bandwidth_hz: parse_optional("TRUNKSCOPE_RADIO_BANDWIDTH_HZ")?,
-            gain_db: parse_optional("TRUNKSCOPE_RADIO_GAIN_DB")?,
-            agc: env_bool("TRUNKSCOPE_RADIO_AGC", false),
-            ppm: parse_optional("TRUNKSCOPE_RADIO_PPM")?.unwrap_or(0.0),
+            sample_rate_hz: settings.radio_sample_rate_hz,
+            bandwidth_hz: settings.radio_bandwidth_hz,
+            gain_db: settings.radio_gain_db,
+            agc: settings.radio_agc,
+            ppm: settings.radio_ppm,
+            audio_output: env::var("TRUNKSCOPE_CALLS_PATH")
+                .unwrap_or_else(|_| "/var/lib/trunkscope/calls".into()),
+            squelch_dbfs: state
+                .systems
+                .read()
+                .expect("systems lock poisoned")
+                .iter()
+                .find(|profile| profile.protocol == "analog-fm")
+                .and_then(|profile| profile.squelch_db)
+                .unwrap_or(-45.0),
         })
     }
-}
-
-fn parse_required<T>(name: &str) -> Result<T>
-where
-    T: std::str::FromStr,
-    T::Err: std::error::Error + Send + Sync + 'static,
-{
-    env::var(name)
-        .with_context(|| format!("{name} is required"))?
-        .parse()
-        .with_context(|| format!("{name} has an invalid value"))
-}
-
-fn parse_optional<T>(name: &str) -> Result<Option<T>>
-where
-    T: std::str::FromStr,
-    T::Err: std::error::Error + Send + Sync + 'static,
-{
-    env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| {
-            value
-                .parse()
-                .with_context(|| format!("{name} has an invalid value"))
-        })
-        .transpose()
-}
-
-fn env_bool(name: &str, fallback: bool) -> bool {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(fallback)
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,10 +99,23 @@ enum RadioEvent {
         overflows: u64,
         sequence: u64,
     },
+    Retuned {
+        #[serde(rename = "frequencyHz")]
+        frequency_hz: f64,
+    },
     SelfTestResult {
         healthy: bool,
         simulated: bool,
         samples: u64,
+    },
+    AudioSegment {
+        path: String,
+        #[serde(rename = "durationMs")]
+        duration_ms: u64,
+        #[serde(rename = "toneHz")]
+        tone_hz: Option<f64>,
+        #[serde(rename = "toneCode")]
+        tone_code: Option<String>,
     },
     FatalError {
         message: String,
@@ -122,23 +123,99 @@ enum RadioEvent {
 }
 
 pub fn spawn(state: Arc<AppState>) -> Result<()> {
-    let config = RadioConfig::from_env()?;
-    let receiver_id = Uuid::new_v4();
-    state
-        .receivers
-        .write()
-        .expect("receiver lock poisoned")
-        .push(initial_receiver(receiver_id, &config));
+    let config = RadioConfig::from_settings(&state)?;
+    let receiver_id = {
+        let mut receivers = state.receivers.write().expect("receiver lock poisoned");
+        if let Some(existing) = receivers.first_mut() {
+            // Keep the durable profile identity across restarts while applying
+            // the authoritative persisted radio settings to the live worker.
+            let id = existing.id;
+            existing.driver = initial_receiver(id, &config).driver;
+            existing.center_frequency_hz = Some(config.frequency_hz);
+            existing.sample_rate_hz = Some(config.sample_rate_hz);
+            existing.gain_db = config.gain_db;
+            existing.ppm = config.ppm;
+            existing.state = ReceiverState::Probing;
+            id
+        } else {
+            let id = Uuid::new_v4();
+            receivers.push(initial_receiver(id, &config));
+            id
+        }
+    };
 
     tokio::spawn(async move {
         let mut restart_delay = Duration::from_secs(1);
+        let mut commands = state.receiver_commands.subscribe();
+        let mut paused = false;
+        let mut failures = 0u8;
         loop {
-            set_state(&state, receiver_id, ReceiverState::Offline);
-            match run_once(&state, receiver_id, &config).await {
-                Ok(()) => warn!("radiod exited; scheduling restart"),
-                Err(cause) => error!(error = %cause, "radiod failed; scheduling restart"),
+            if paused {
+                match commands.recv().await {
+                    Ok(
+                        ReceiverCommand::Start(id)
+                        | ReceiverCommand::Restart(id)
+                        | ReceiverCommand::Probe(id),
+                    ) if id == receiver_id => {
+                        paused = false;
+                        set_state(&state, receiver_id, ReceiverState::Probing);
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+                continue;
             }
-            set_state(&state, receiver_id, ReceiverState::Faulted);
+            let config = match RadioConfig::from_settings(&state) {
+                Ok(config) => config,
+                Err(cause) => {
+                    set_state(&state, receiver_id, ReceiverState::Faulted);
+                    error!(error = %cause, "invalid persisted radio settings");
+                    sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+            set_state(&state, receiver_id, ReceiverState::Offline);
+            let run = run_once(&state, receiver_id, &config);
+            tokio::pin!(run);
+            let interrupted = tokio::select! {
+                result = &mut run => {
+                    match result {
+                        Ok(()) => { failures = 0; warn!("radiod exited; scheduling restart"); }
+                        Err(cause) => { failures = failures.saturating_add(1); error!(error = %cause, failures, "radiod failed; scheduling restart"); }
+                    }
+                    false
+                }
+                command = commands.recv() => {
+                    match command {
+                        Ok(ReceiverCommand::Stop(id)) if id == receiver_id => { paused = true; set_state(&state, receiver_id, ReceiverState::Stopped); }
+                        Ok(ReceiverCommand::Start(id) | ReceiverCommand::Restart(id) | ReceiverCommand::Probe(id)) if id == receiver_id => { set_state(&state, receiver_id, ReceiverState::Probing); }
+                        Ok(_) | Err(_) => {}
+                    }
+                    true
+                }
+            };
+            if interrupted {
+                restart_delay = Duration::from_secs(1);
+                continue;
+            }
+            let faulted = failures >= 3;
+            set_state(
+                &state,
+                receiver_id,
+                if faulted {
+                    ReceiverState::Faulted
+                } else {
+                    ReceiverState::Degraded
+                },
+            );
+            // Do not hide a persistent device/plugin failure behind an
+            // infinite restart loop. An explicit probe/start/restart command
+            // clears the pause and makes recovery observable to the operator.
+            if faulted {
+                warn!(receiver_id = %receiver_id, "radiod paused after repeated failures; operator action required");
+                paused = true;
+                continue;
+            }
             sleep(restart_delay).await;
             restart_delay = (restart_delay * 2).min(Duration::from_secs(30));
         }
@@ -198,6 +275,10 @@ async fn run_once(state: &Arc<AppState>, receiver_id: Uuid, config: &RadioConfig
         .arg(config.sample_rate_hz.to_string())
         .arg("--ppm")
         .arg(config.ppm.to_string())
+        .arg("--audio-output")
+        .arg(&config.audio_output)
+        .arg("--squelch-dbfs")
+        .arg(config.squelch_dbfs.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -280,11 +361,97 @@ fn apply_event(state: &AppState, receiver_id: Uuid, event: RadioEvent) {
             receiver.health.updated_at = Utc::now();
             tracing::debug!(%peak_dbfs, %dc_level, %samples, %reads, %timeouts, %sequence, "RF metric");
         }
+        RadioEvent::Retuned { frequency_hz } => {
+            receiver.center_frequency_hz = Some(frequency_hz.round() as u64);
+            receiver.state = ReceiverState::Monitoring;
+        }
         RadioEvent::SelfTestResult {
             healthy,
             simulated,
             samples,
         } => info!(%healthy, %simulated, %samples, "radio self-test finished"),
+        RadioEvent::AudioSegment {
+            path,
+            duration_ms,
+            tone_hz,
+            tone_code,
+        } => {
+            let settings = state
+                .settings
+                .read()
+                .expect("settings lock poisoned")
+                .clone();
+            let tuned_frequency_hz = receiver
+                .center_frequency_hz
+                .unwrap_or(settings.radio_frequency_hz);
+            let tone_allowed = state
+                .systems
+                .read()
+                .expect("system lock poisoned")
+                .iter()
+                .filter(|profile| profile.protocol == "analog-fm")
+                // Retunes can move between multiple FM channels. Apply the
+                // tone gate for the channel that is actually tuned instead
+                // of accidentally using the first profile in the database.
+                .min_by_key(|profile| {
+                    profile
+                        .frequency_hz
+                        .map(|frequency| frequency.abs_diff(tuned_frequency_hz))
+                        .unwrap_or(u64::MAX)
+                })
+                .filter(|profile| {
+                    profile
+                        .frequency_hz
+                        .map(|frequency| frequency.abs_diff(tuned_frequency_hz) <= 25_000)
+                        .unwrap_or(false)
+                })
+                .and_then(|profile| profile.tone.as_deref())
+                .map(|expected| {
+                    expected == "none"
+                        || if expected.starts_with('D') {
+                            tone_code
+                                .as_deref()
+                                .is_some_and(|actual| expected.eq_ignore_ascii_case(actual))
+                        } else {
+                            tone_hz
+                                .map(|actual| {
+                                    (actual - expected.parse::<f64>().unwrap_or(-1.0)).abs() < 0.8
+                                })
+                                .unwrap_or(false)
+                        }
+                })
+                .unwrap_or(true);
+            if !tone_allowed {
+                return;
+            }
+            let call = Call {
+                id: Uuid::new_v4(),
+                system_id: Uuid::nil(),
+                system_name: "Analog FM".into(),
+                site_id: Uuid::nil(),
+                talkgroup_id: 0,
+                talkgroup_label: format!("FM {}", tuned_frequency_hz),
+                category: "analog-fm".into(),
+                frequency_hz: tuned_frequency_hz,
+                tdma_slot: None,
+                source_radio_id: None,
+                started_at: Utc::now() - chrono::Duration::milliseconds(duration_ms as i64),
+                ended_at: Some(Utc::now()),
+                state: CallState::Complete,
+                encryption: EncryptionState::Clear,
+                signal_dbfs: receiver.health.signal_dbfs,
+                transcript: None,
+                summary: None,
+                location: None,
+                audio: Some(AudioAsset {
+                    object_key: path,
+                    content_type: "audio/wav".into(),
+                    duration_ms,
+                }),
+            };
+            state.upsert_call(call.clone(), CallEvent::Ended(call.clone()));
+            state.enqueue_processing(call);
+        }
         RadioEvent::FatalError { message } => {
             receiver.state = ReceiverState::Faulted;
             error!(%message, "radiod reported fatal error");
@@ -331,10 +498,28 @@ mod tests {
             gain_db: None,
             agc: false,
             ppm: 0.0,
+            audio_output: "/var/lib/trunkscope/calls".into(),
+            squelch_dbfs: -60.0,
         };
         assert_eq!(
             initial_receiver(Uuid::new_v4(), &config).driver,
             ReceiverDriver::Sdrplay
         );
+    }
+
+    #[test]
+    fn persisted_settings_drive_radio_config() {
+        let state = AppState::new();
+        {
+            let mut settings = state.settings.write().unwrap();
+            settings.radio_device = "driver=remote,remote=tcp://receiver:55132".into();
+            settings.radio_frequency_hz = 155_550_000;
+            settings.radio_sample_rate_hz = 2_000_000;
+            settings.radio_agc = true;
+        }
+        let config = RadioConfig::from_settings(&state).unwrap();
+        assert_eq!(config.frequency_hz, 155_550_000);
+        assert_eq!(config.sample_rate_hz, 2_000_000);
+        assert!(config.agc);
     }
 }

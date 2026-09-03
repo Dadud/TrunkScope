@@ -52,3 +52,17 @@ The receiver laptop only supplies IQ through SoapyRemote. Trunk Recorder sends
 live call lifecycle events to the TrunkScope control plane and writes completed
 WAV/JSON artifacts into the shared call volume. Encrypted calls are retained as
 metadata only by TrunkScope and are never attached to playable audio.
+For a real P25 deployment, render `config.json` from appliance settings instead of
+using the example file:
+
+```sh
+TRUNKSCOPE_P25_SYSTEM_NAME="Wood County P25" \
+TRUNKSCOPE_P25_CONTROL_CHANNELS="851012500,852012500" \
+TRUNKSCOPE_RADIO_DEVICE="soapy=0" \
+TRUNKSCOPE_RADIO_FREQUENCY_HZ="851012500" \
+scripts/render-decoder-config.sh deploy/decoder/config.json
+```
+
+The generated file is intentionally ignored by source control and can contain
+site-specific receiver addresses. Keep `talkgroups.csv` beside it and enable the
+Compose `decoder` profile only after validating the generated configuration.

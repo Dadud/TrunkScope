@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -7,6 +8,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iomanip>
+#include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -65,6 +68,8 @@ struct Options {
   double ppm{0};
   unsigned seconds{10};
   bool simulate{false};
+  std::string audio_output;
+  double squelch_dbfs{-60.0};
 };
 
 double parse_number(std::string_view flag, std::string_view value) {
@@ -90,6 +95,8 @@ Options parse_options(int argc, char** argv) {
     else if (argument == "--self-test") options.mode = Options::Mode::self_test;
     else if (argument == "--monitor") options.mode = Options::Mode::monitor;
     else if (argument == "--simulate") options.simulate = true;
+    else if (argument == "--audio-output") options.audio_output = value_after(index, argument);
+    else if (argument == "--squelch-dbfs") options.squelch_dbfs = parse_number(argument, value_after(index, argument));
     else if (argument == "--agc") options.agc = true;
     else if (argument == "--device") options.device_args = value_after(index, argument);
     else if (argument == "--frequency-hz") options.frequency_hz = parse_number(argument, value_after(index, argument));
@@ -145,6 +152,145 @@ struct StreamStats {
   }
 };
 
+class WavWriter {
+ public:
+  WavWriter() = default;
+  ~WavWriter() { close(); }
+  void open(const std::string& path, std::uint32_t sample_rate) {
+    close();
+    file_.open(path, std::ios::binary);
+    if (!file_) throw std::runtime_error("failed to open audio output: " + path);
+    path_ = path; sample_rate_ = sample_rate; samples_ = 0;
+    write_header();
+  }
+  void write(float sample) {
+    if (!file_) return;
+    const auto value = static_cast<std::int16_t>(std::clamp(sample, -1.0f, 1.0f) * 32767.0f);
+    file_.write(reinterpret_cast<const char*>(&value), sizeof(value)); ++samples_;
+  }
+  std::uint64_t samples() const { return samples_; }
+  const std::string& path() const { return path_; }
+  void close() {
+    if (!file_) return;
+    file_.seekp(4); write_u32(static_cast<std::uint32_t>(36 + samples_ * 2));
+    file_.seekp(40); write_u32(static_cast<std::uint32_t>(samples_ * 2));
+    file_.close();
+  }
+ private:
+  std::ofstream file_;
+  std::string path_;
+  std::uint32_t sample_rate_{48000};
+  std::uint64_t samples_{0};
+  void write_u16(std::uint16_t v) { file_.write(reinterpret_cast<const char*>(&v), 2); }
+  void write_u32(std::uint32_t v) { file_.write(reinterpret_cast<const char*>(&v), 4); }
+  void write_header() {
+    file_.write("RIFF", 4); write_u32(0); file_.write("WAVEfmt ", 8); write_u32(16);
+    write_u16(1); write_u16(1); write_u32(sample_rate_); write_u32(sample_rate_ * 2);
+    write_u16(2); write_u16(16); file_.write("data", 4); write_u32(0);
+  }
+};
+
+[[maybe_unused]] std::optional<double> detect_ctcss(const std::vector<float>& samples, double sample_rate) {
+  if (samples.size() < 4800) return std::nullopt;
+  static constexpr double tones[] = {67.0, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5,
+      91.5, 94.8, 97.4, 100.0, 103.5, 107.2, 110.9, 114.8, 118.8, 123.0,
+      127.3, 131.8, 136.5, 141.3, 146.2, 151.4, 156.7, 162.2, 167.9,
+      173.8, 179.9, 186.2, 192.8, 203.5, 210.7, 218.1, 225.7, 233.6, 241.8};
+  const std::size_t count = std::min<std::size_t>(samples.size(), 48'000);
+  double total = 0.0;
+  for (std::size_t i = samples.size() - count; i < samples.size(); ++i) total += samples[i] * samples[i];
+  if (total <= 1e-5) return std::nullopt;
+  double best_power = 0.0;
+  double best_tone = 0.0;
+  for (const double tone : tones) {
+    const auto omega = 2.0 * 3.14159265358979323846 * tone / sample_rate;
+    double in_phase = 0.0, quadrature = 0.0;
+    std::size_t index = 0;
+    for (std::size_t i = samples.size() - count; i < samples.size(); ++i, ++index) {
+      const auto value = static_cast<double>(samples[i]);
+      in_phase += value * std::cos(omega * static_cast<double>(index));
+      quadrature += value * std::sin(omega * static_cast<double>(index));
+    }
+    const auto power = (in_phase * in_phase + quadrature * quadrature) / static_cast<double>(count * count);
+    if (power > best_power) { best_power = power; best_tone = tone; }
+  }
+  return best_power / (total / static_cast<double>(count)) > 0.08 ? std::optional<double>(best_tone) : std::nullopt;
+}
+
+// DCS is transmitted as a repeating 23-bit Golay(23,12) word at 134.4 bit/s.
+// The discriminator stream is already audio-rate, so a sign-integrator is a
+// useful, bounded detector before Golay nearest-codeword matching. We try both
+// polarities because radios use normal and inverted DCS variants.
+std::uint32_t dcs_encode(std::uint32_t data) {
+  data &= 0x0fffU;
+  auto remainder = data;
+  for (int bit = 0; bit < 12; ++bit) {
+    remainder <<= 1;
+    if ((remainder & 0x1000U) != 0) remainder ^= 0x08eaU;
+  }
+  return data | ((remainder & 0x07ffU) << 12);
+}
+
+[[maybe_unused]] std::uint32_t reverse_bits23(std::uint32_t value) {
+  std::uint32_t result = 0;
+  for (int bit = 0; bit < 23; ++bit) result = (result << 1) | ((value >> bit) & 1U);
+  return result;
+}
+
+struct DcsCandidate { std::uint32_t word; int code; bool inverted; };
+
+const std::vector<DcsCandidate>& dcs_candidates() {
+  static const auto candidates = [] {
+    std::vector<DcsCandidate> values;
+    values.reserve(1024);
+    for (int code = 0; code < 512; ++code) {
+      const auto word = dcs_encode(static_cast<std::uint32_t>(code) | 0x800U);
+      values.push_back({word, code, false});
+      values.push_back({word ^ 0x7fffffU, code, true});
+    }
+    return values;
+  }();
+  return candidates;
+}
+
+[[maybe_unused]] std::optional<std::string> detect_dcs(const std::vector<float>& samples, double sample_rate) {
+  constexpr double baud = 134.4;
+  constexpr int bits = 23;
+  if (samples.size() < static_cast<std::size_t>(sample_rate * 0.45)) return std::nullopt;
+  const auto samples_per_bit = sample_rate / baud;
+  const auto window = static_cast<std::size_t>(std::ceil(samples_per_bit * bits));
+  const auto start = samples.size() > static_cast<std::size_t>(sample_rate * 2.0)
+                         ? samples.size() - static_cast<std::size_t>(sample_rate * 2.0) : 0;
+  int best_distance = bits + 1;
+  double best_confidence = 0.0;
+  DcsCandidate best{};
+  for (std::size_t offset = start; offset + window <= samples.size(); offset += 8) {
+    std::uint32_t word = 0;
+    double confidence = 0.0;
+    for (int bit = 0; bit < bits; ++bit) {
+      const auto begin = offset + static_cast<std::size_t>(std::floor(bit * samples_per_bit));
+      const auto end = std::min(samples.size(), offset + static_cast<std::size_t>(std::floor((bit + 1) * samples_per_bit)));
+      double sum = 0.0;
+      for (auto index = begin; index < end; ++index) sum += samples[index];
+      const auto average = sum / static_cast<double>(std::max<std::size_t>(1, end - begin));
+      if (average >= 0) word |= 1U << (bits - bit - 1);
+      confidence += std::abs(average);
+    }
+    confidence /= bits;
+    for (const auto& candidate : dcs_candidates()) {
+      const auto distance = std::popcount(word ^ candidate.word);
+      if (distance < best_distance || (distance == best_distance && confidence > best_confidence)) {
+        best_distance = distance; best_confidence = confidence; best = candidate;
+      }
+    }
+  }
+  if (best_distance > 3 || best_confidence < 0.01) return std::nullopt;
+  std::ostringstream code;
+  code << "D" << std::oct << std::setw(3) << std::setfill('0') << best.code
+       << (best.inverted ? 'I' : 'N');
+  return code.str();
+}
+
 double power_dbfs(const StreamStats& stats) {
   if (stats.samples == 0 || stats.sum_power <= 0) return -200.0;
   return 10.0 * std::log10(stats.sum_power / static_cast<double>(stats.samples));
@@ -181,6 +327,12 @@ int simulated_stream(const Options& options) {
   double phase = 0;
   const auto started = Clock::now();
   auto next_metric = started + std::chrono::seconds{1};
+  WavWriter audio;
+  std::vector<float> simulated_audio;
+  if (!options.audio_output.empty()) {
+    std::filesystem::create_directories(options.audio_output);
+    audio.open(options.audio_output + "/fm-simulated.wav", 48'000);
+  }
   const auto deadline = options.mode == Options::Mode::self_test
                             ? started + std::chrono::seconds{options.seconds}
                             : Clock::time_point::max();
@@ -191,6 +343,19 @@ int simulated_stream(const Options& options) {
       phase += 0.03125;
       sample = {static_cast<float>(0.12 * std::cos(phase)),
                 static_cast<float>(0.12 * std::sin(phase))};
+    }
+    if (audio.samples() < static_cast<std::uint64_t>(options.seconds) * 48'000) {
+      for (std::size_t index = 0; index < buffer.size() / 50; ++index) {
+        const auto sample_index = audio.samples();
+        const auto dcs_word = dcs_encode(0x800U | 023U); // D023N development fixture
+        const auto dcs_bit = static_cast<int>(std::floor(static_cast<double>(sample_index) * 134.4 / 48'000.0)) % 23;
+        const auto dcs_level = ((dcs_word >> (22 - dcs_bit)) & 1U) != 0 ? 0.18 : -0.18;
+        const auto sample = static_cast<float>(dcs_level
+          + 0.05 * std::sin(2.0 * 3.14159265358979323846 * 100.0 * static_cast<double>(sample_index) / 48'000.0)
+          + 0.02 * std::sin(2.0 * 3.14159265358979323846 * 700.0 * static_cast<double>(sample_index) / 48'000.0));
+        audio.write(sample);
+        simulated_audio.push_back(sample);
+      }
     }
     total.add(buffer.data(), buffer.size());
     interval.add(buffer.data(), buffer.size());
@@ -204,6 +369,15 @@ int simulated_stream(const Options& options) {
   }
 
   const auto elapsed = std::chrono::duration<double>(Clock::now() - started).count();
+  if (audio.samples() > 0) {
+    audio.close();
+    const auto tone = detect_ctcss(simulated_audio, 48'000.0);
+    const auto dcs = detect_dcs(simulated_audio, 48'000.0);
+    std::cout << "{\"type\":\"audioSegment\",\"path\":\"" << json_escape(audio.path())
+              << "\",\"durationMs\":" << (audio.samples() * 1000 / 48'000) << ",\"toneHz\":"
+              << (tone ? std::to_string(*tone) : "null") << ",\"toneCode\":"
+              << (dcs ? "\"" + json_escape(*dcs) + "\"" : "null") << "}\n";
+  }
   // Synthetic generation is intentionally CPU-paced; hardware self-tests enforce
   // real-time throughput, while this path verifies framing and supervision only.
   const bool healthy = total.samples > 0 && total.timeouts == 0 && total.overflows == 0;
@@ -327,17 +501,88 @@ int hardware_stream(const Options& options) {
   std::uint64_t sequence = 0;
   const auto started = Clock::now();
   auto next_metric = started + std::chrono::seconds{1};
+  double tuned_frequency = actual_frequency;
+  WavWriter audio;
+  std::complex<float> previous{1.0f, 0.0f};
+  std::size_t decimation = std::max<std::size_t>(1, static_cast<std::size_t>(actual_rate / 48'000.0));
+  std::size_t decimation_counter = 0;
+  bool squelch_open = false;
+  std::size_t quiet_blocks = 0;
+  std::uint64_t segment_number = 0;
+  std::vector<float> tone_samples;
+  const auto audio_root = options.audio_output.empty() ? std::string{} : options.audio_output;
+  if (!audio_root.empty() && !std::filesystem::create_directories(audio_root) &&
+      !std::filesystem::is_directory(audio_root)) {
+    throw std::runtime_error("failed to create audio output directory: " + audio_root);
+  }
+  const std::string retune_file = [] { const char* value = std::getenv("TRUNKSCOPE_RETUNE_FILE"); return value ? std::string(value) : std::string{"/tmp/trunkscope-retune-frequency"}; }();
   const auto deadline = options.mode == Options::Mode::self_test
                             ? started + std::chrono::seconds{options.seconds}
                             : Clock::time_point::max();
 
   while (running && Clock::now() < deadline) {
+    std::ifstream requested_file(retune_file);
+    double requested_frequency = 0;
+    if (requested_file >> requested_frequency && requested_frequency > 0 && std::abs(requested_frequency - tuned_frequency) >= 1.0) {
+      device->setFrequency(SOAPY_SDR_RX, 0, requested_frequency);
+      tuned_frequency = device->getFrequency(SOAPY_SDR_RX, 0);
+      std::cout << "{\"type\":\"retuned\",\"frequencyHz\":" << tuned_frequency << "}\n" << std::flush;
+    }
     int flags = 0;
     long long time_ns = 0;
     const int received = device->readStream(stream, buffers, buffer.size(), flags, time_ns, 250'000);
     if (received > 0) {
       total.add(buffer.data(), static_cast<std::size_t>(received));
       interval.add(buffer.data(), static_cast<std::size_t>(received));
+      StreamStats block;
+      block.add(buffer.data(), static_cast<std::size_t>(received));
+      const bool active = power_dbfs(block) >= options.squelch_dbfs;
+      if (active && !squelch_open) {
+        const auto path = audio_root + "/fm-" + std::to_string(++segment_number) + ".wav";
+        audio.open(path, 48'000);
+        squelch_open = true;
+        quiet_blocks = 0;
+      } else if (!active && squelch_open) {
+        if (++quiet_blocks >= 4) {
+          audio.close();
+          std::cout << "{\"type\":\"audioSegment\",\"path\":\""
+                    << json_escape(audio.path()) << "\",\"durationMs\":"
+                    << (audio.samples() * 1000 / 48'000) << "}\n" << std::flush;
+          squelch_open = false;
+          quiet_blocks = 0;
+        }
+      } else if (active) {
+        quiet_blocks = 0;
+      }
+      if (squelch_open) {
+        for (int index = 0; index < received; ++index) {
+          const auto sample = buffer[static_cast<std::size_t>(index)];
+          const auto product = std::conj(previous) * sample;
+          const float discriminator = static_cast<float>(std::atan2(product.imag(), product.real()) / 3.14159265358979323846);
+          previous = sample;
+          if (++decimation_counter >= decimation) {
+            decimation_counter = 0;
+            audio.write(discriminator * 0.8f);
+            tone_samples.push_back(discriminator * 0.8f);
+            if (tone_samples.size() > 96'000) tone_samples.erase(tone_samples.begin(), tone_samples.begin() + 48'000);
+            if (audio.samples() >= 480'000) {
+              audio.close();
+              const auto tone = detect_ctcss(tone_samples, 48'000.0);
+              const auto dcs = detect_dcs(tone_samples, 48'000.0);
+              std::cout << "{\"type\":\"audioSegment\",\"path\":\""
+                        << json_escape(audio.path()) << "\",\"durationMs\":"
+                        << (audio.samples() * 1000 / 48'000) << ",\"toneHz\":"
+                        << (tone ? std::to_string(*tone) : "null") << ",\"toneCode\":"
+                        << (dcs ? "\"" + json_escape(*dcs) + "\"" : "null") << "}\n" << std::flush;
+              const auto path = audio_root + "/fm-" + std::to_string(++segment_number) + ".wav";
+              audio.open(path, 48'000);
+              tone_samples.clear();
+            }
+          }
+        }
+      } else if (received > 0) {
+        previous = buffer[static_cast<std::size_t>(received - 1)];
+      }
     } else if (received == SOAPY_SDR_TIMEOUT) {
       ++total.timeouts;
       ++interval.timeouts;
@@ -355,6 +600,16 @@ int hardware_stream(const Options& options) {
   }
 
   const auto elapsed = std::chrono::duration<double>(Clock::now() - started).count();
+  if (squelch_open) {
+    audio.close();
+    const auto tone = detect_ctcss(tone_samples, 48'000.0);
+    const auto dcs = detect_dcs(tone_samples, 48'000.0);
+    std::cout << "{\"type\":\"audioSegment\",\"path\":\""
+              << json_escape(audio.path()) << "\",\"durationMs\":"
+              << (audio.samples() * 1000 / 48'000) << ",\"toneHz\":"
+              << (tone ? std::to_string(*tone) : "null") << ",\"toneCode\":"
+              << (dcs ? "\"" + json_escape(*dcs) + "\"" : "null") << "}\n" << std::flush;
+  }
   const auto expected = actual_rate * elapsed;
   const bool enough_samples =
       total.samples >= static_cast<std::uint64_t>(expected * 0.80);

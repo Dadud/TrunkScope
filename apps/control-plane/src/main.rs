@@ -1,8 +1,11 @@
 mod api;
 mod auth;
 mod decoder;
+mod file_ingest;
+mod persistence;
 mod processor;
 mod radiod;
+mod scanner;
 mod simulator;
 mod state;
 
@@ -13,6 +16,7 @@ use state::AppState;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use trunkscope_domain::{Receiver, ReceiverCapabilities, ReceiverHealth, ReceiverState};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -24,14 +28,109 @@ async fn main() -> Result<()> {
         .init();
 
     let state = Arc::new(AppState::new());
-    processor::spawn(Arc::clone(&state));
-    let radio_mode = env::var("TRUNKSCOPE_RADIO_MODE").unwrap_or_else(|_| {
-        if env_bool("TRUNKSCOPE_SIMULATOR", true) {
-            "simulator".into()
-        } else {
-            "radiod".into()
+    // Session boundaries are runtime state, not a UI heuristic. Finalize an
+    // exchange once it has been quiet for the configured ten-second dwell.
+    {
+        let session_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                ticker.tick().await;
+                session_state.finalize_expired_sessions();
+            }
+        });
+    }
+    if let Ok(database_url) = env::var("TRUNKSCOPE_DATABASE_URL") {
+        persistence::hydrate(&state, &database_url).await;
+        if let Some(sender) = persistence::start(database_url).await {
+            *state
+                .persistence
+                .write()
+                .expect("persistence lock poisoned") = Some(sender);
         }
-    });
+    }
+    // Decoder mode does not run the local radiod worker, so create the
+    // operator-visible receiver inventory entry from persisted settings.
+    if state
+        .receivers
+        .read()
+        .expect("receiver lock poisoned")
+        .is_empty()
+        && state
+            .settings
+            .read()
+            .expect("settings lock poisoned")
+            .radio_mode
+            == "decoder"
+    {
+        let settings = state
+            .settings
+            .read()
+            .expect("settings lock poisoned")
+            .clone();
+        state
+            .receivers
+            .write()
+            .expect("receiver lock poisoned")
+            .push(Receiver {
+                id: uuid::Uuid::new_v4(),
+                label: "RSP1B via Trunk Recorder".into(),
+                driver: trunkscope_domain::ReceiverDriver::Sdrplay,
+                serial: settings.radio_device.clone(),
+                state: ReceiverState::Monitoring,
+                center_frequency_hz: Some(settings.radio_frequency_hz),
+                sample_rate_hz: Some(settings.radio_sample_rate_hz),
+                gain_db: settings.radio_gain_db,
+                ppm: settings.radio_ppm,
+                capabilities: ReceiverCapabilities {
+                    minimum_frequency_hz: 1_000_000,
+                    maximum_frequency_hz: 2_000_000_000,
+                    sample_rates_hz: vec![2_000_000, 2_048_000, 2_400_000, 6_000_000],
+                    maximum_bandwidth_hz: 8_000_000,
+                    supports_agc: true,
+                    gain_elements: vec!["IFGR".into(), "RFGR".into()],
+                },
+                health: ReceiverHealth {
+                    signal_dbfs: -120.0,
+                    noise_dbfs: -120.0,
+                    frequency_error_hz: 0.0,
+                    dropped_samples: 0,
+                    updated_at: chrono::Utc::now(),
+                },
+            });
+    }
+    api::write_decoder_config(&state);
+    processor::spawn(Arc::clone(&state));
+    file_ingest::spawn(Arc::clone(&state));
+    // An enabled scan list is an operator intent, not merely UI metadata.
+    // Restore the first enabled list after restart so radiod immediately
+    // begins retuning through persisted FM channels.
+    if state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .radio_mode
+        == "radiod"
+    {
+        let active = state
+            .scan_lists
+            .read()
+            .expect("scan list lock poisoned")
+            .iter()
+            .find(|list| list.enabled)
+            .map(|list| list.id);
+        *state
+            .active_scan_list
+            .write()
+            .expect("scan state lock poisoned") = active;
+    }
+    scanner::spawn(Arc::clone(&state));
+    let radio_mode = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .radio_mode
+        .clone();
     match radio_mode.as_str() {
         "simulator" => simulator::spawn(Arc::clone(&state)),
         "radiod" => radiod::spawn(Arc::clone(&state))?,
@@ -50,13 +149,6 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
-}
-
-fn env_bool(name: &str, fallback: bool) -> bool {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(fallback)
 }
 
 async fn shutdown_signal() {
