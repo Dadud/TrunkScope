@@ -82,9 +82,42 @@ export async function confirmSessionLocation(sessionId: string, location: { labe
 export async function getScanLists(): Promise<ScanList[]> { const response = await fetch("/api/v1/scan-lists"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<ScanList[]>; }
 export async function saveScanList(list: ScanList): Promise<ScanList> { const response = await fetch("/api/v1/scan-lists", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(list) }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`); return response.json() as Promise<ScanList>; }
 export async function getSystems(): Promise<SystemProfile[]> { const response = await fetch("/api/v1/systems"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<SystemProfile[]>; }
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+function normalizeSystemProfile(profile: Omit<SystemProfile, "id"> & { id?: string }): SystemProfile & { id: string } {
+  const id = profile.id?.trim();
+  const tone = profile.tone?.trim();
+  return {
+    ...profile,
+    id: id && id !== NIL_UUID ? id : NIL_UUID,
+    receiverId: profile.receiverId?.trim() || undefined,
+    tone: tone || undefined,
+    squelchDb:
+      profile.squelchDb != null && Number.isFinite(profile.squelchDb)
+        ? profile.squelchDb
+        : undefined,
+  };
+}
+
 export async function saveSystem(profile: Omit<SystemProfile, "id"> & { id?: string }): Promise<SystemProfile> {
-  const response = await fetch("/api/v1/systems", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify({ id: profile.id ?? "00000000-0000-0000-0000-000000000000", ...profile }) });
-  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+  const body = normalizeSystemProfile(profile);
+  const response = await fetch("/api/v1/systems", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 401
+        ? "Administrator login required"
+        : response.status === 400
+          ? "Check name, frequency, bandwidth (6.25/12.5/25 kHz), modulation, and PL tone"
+          : response.status === 422
+            ? "Invalid system profile JSON (check IDs and numeric fields)"
+            : `API returned ${response.status}`,
+    );
+  }
   return response.json() as Promise<SystemProfile>;
 }
 export async function importTalkgroups(file: File, options?: { systemId?: string; merge?: boolean }): Promise<{ imported: boolean; rows: number; path: string }> {

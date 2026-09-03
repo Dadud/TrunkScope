@@ -12,9 +12,40 @@ use trunkscope_domain::{
     Call, CallEvent, ConversationSession, PublicationPolicy, Receiver, Talkgroup,
 };
 
+mod flexible_uuid {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<uuid::Uuid, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Ok(uuid::Uuid::nil());
+        }
+        uuid::Uuid::parse_str(trimmed).map_err(serde::de::Error::custom)
+    }
+
+    pub fn deserialize_option<'de, D>(deserializer: D) -> Result<Option<uuid::Uuid>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<String>::deserialize(deserializer)?;
+        match value {
+            None => Ok(None),
+            Some(text) if text.trim().is_empty() => Ok(None),
+            Some(text) => uuid::Uuid::parse_str(text.trim())
+                .map(Some)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemProfile {
+    #[serde(deserialize_with = "flexible_uuid::deserialize")]
     pub id: uuid::Uuid,
     pub name: String,
     pub protocol: String,
@@ -36,7 +67,7 @@ pub struct SystemProfile {
     #[serde(default)]
     pub sites: Vec<SystemSite>,
     /// When set, Trunk Recorder sources are tuned from systems assigned to this receiver.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flexible_uuid::deserialize_option")]
     pub receiver_id: Option<uuid::Uuid>,
 }
 

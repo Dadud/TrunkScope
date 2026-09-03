@@ -163,7 +163,7 @@ export function ApplianceDrawer({
   // Systems State
   const [systems, setSystems] = useState<SystemProfile[]>([]);
   const [systemDraft, setSystemDraft] = useState<SystemProfile>({
-    id: "",
+    id: "00000000-0000-0000-0000-000000000000",
     name: "New System",
     protocol: "p25",
     controlChannelHz: 851012500,
@@ -1084,7 +1084,7 @@ export function ApplianceDrawer({
                       <label>Squelch (dB)<input type="number" value={systemDraft.squelchDb ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, squelchDb: Number(e.target.value) })} /></label>
                       <label>
                         PL Tone (CTCSS/DCS)
-                        <input value={systemDraft.tone ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, tone: e.target.value })} placeholder="123.0 or D023N" />
+                        <input value={systemDraft.tone ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, tone: e.target.value.trim() || undefined })} placeholder="123.0 or D023N" />
                         <small className="pane-desc">Squelch tone; leave blank for carrier squelch. Not two-tone dispatch.</small>
                       </label>
                      </>

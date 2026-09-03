@@ -3044,6 +3044,13 @@ async fn save_system(
     if !admin_allowed(&state, &headers) {
         return (StatusCode::UNAUTHORIZED, Json(profile));
     }
+    if profile
+        .tone
+        .as_ref()
+        .is_some_and(|tone| tone.trim().is_empty())
+    {
+        profile.tone = None;
+    }
     let is_p25 = profile.protocol.starts_with("p25");
     if profile.name.trim().is_empty()
         || (is_p25 && profile.control_channel_hz.unwrap_or_default() == 0)
@@ -3286,6 +3293,22 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("cookie", "trunkscope_session=test-session")
                     .body(Body::from(r#"{"id":"00000000-0000-0000-0000-000000000000","name":"Local FM","protocol":"analog-fm","frequencyHz":155550000,"bandwidthHz":12500,"modulation":"NFM"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn analog_profile_accepts_empty_id_string() {
+        let state = test_state();
+        let response = router(state)
+            .oneshot(
+                Request::post("/api/v1/systems")
+                    .header("content-type", "application/json")
+                    .header("cookie", "trunkscope_session=test-session")
+                    .body(Body::from(r#"{"id":"","name":"Jackson FM","protocol":"analog-fm","frequencyHz":154445000,"bandwidthHz":12500,"modulation":"NFM","tone":"123.0"}"#))
                     .unwrap(),
             )
             .await
