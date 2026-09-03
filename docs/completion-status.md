@@ -1,5 +1,7 @@
 # TrunkScope completion ledger
 
+Evidence-based integration status. Operator documentation: [README.md](README.md).
+
 This file is deliberately evidence-based. A green software check does not
 stand in for an RF acceptance test.
 

@@ -1,5 +1,11 @@
 # Central decoder configuration
 
+On the **single-container appliance**, Trunk Recorder config is generated automatically from persisted system profiles in the control plane (`audio/decoder/config.json`). Use this directory for manual examples, fixtures, and legacy scripts.
+
+Operator docs: [docs/imports.md](../../docs/imports.md) · [docs/configuration.md](../../docs/configuration.md)
+
+---
+
 Generate `config.json` from the example after you know the receiver address and
 control channels:
 

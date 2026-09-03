@@ -2,24 +2,26 @@
 
 TrunkScope's single-container appliance decodes **P25** and **conventional FM** natively. **DMR is not decoded inside the container.**
 
+See also: [installation](installation.md) · [configuration](configuration.md) · [operations](operations.md)
+
 ## Supported path: external upload
 
-1. Run SDRTrunk, rdio-scanner, or another decoder on a separate host.
-2. In TrunkScope, open **Appliance → AI & Integrations**.
-3. Enable **Rdio-scanner compatible ingest** (`compatIngestEnabled`).
-4. Configure the external tool to POST finished calls to:
+1. Run **SDRTrunk**, **rdio-scanner**, or another decoder on a separate host.
+2. In TrunkScope: **Appliance → AI & Integrations** → enable **Rdio-scanner compatible ingest**.
+3. Configure the external tool to POST finished calls to:
 
-```
-POST https://YOUR_APPLIANCE:18088/api/call-upload
+```http
+POST http://YOUR_APPLIANCE:18088/api/call-upload
+Content-Type: application/json
 ```
 
 TrunkScope applies the same transcription, summary, geocoding, and Discord routing as locally decoded calls.
 
 ## What you get
 
-- Call metadata and audio in the main feed
-- AI pipeline (external Speaches/Ollama or cloud providers)
-- Map pins and archive playback when location metadata is present
+- Call metadata and audio in the main feed and archive
+- External AI pipeline (Speaches/Ollama or cloud providers)
+- Map pins and playback when location metadata is present
 
 ## What you do not get
 
@@ -30,12 +32,20 @@ TrunkScope applies the same transcription, summary, geocoding, and Discord routi
 
 | Tool | Role |
 |------|------|
-| **SDRTrunk** | DMR/P25 decode on a Windows or Linux host |
-| **rdio-scanner** | Multi-protocol ingest hub with upload plugins |
+| [SDRTrunk](https://github.com/DSheirer/sdrtrunk) | DMR/P25 decode on Windows or Linux |
+| [rdio-scanner](https://github.com/chuot/rdio-scanner) | Multi-protocol ingest hub |
 
-Point the upload URL at your TrunkScope appliance LAN address. Do not expose `/api/call-upload` to the public internet without authentication.
+Point the upload URL at your appliance **LAN address**. Do not expose `/api/call-upload` to the public internet without authentication.
 
 ## Security
 
-- Keep `TRUNKSCOPE_LOCAL_ONLY=true` only on trusted LANs.
-- When authentication is enabled, configure the upload tool with valid credentials or restrict by network ACL.
+- `TRUNKSCOPE_LOCAL_ONLY=true` is for trusted LANs only.
+- With normal auth enabled, restrict upload sources by network ACL or configure credentials in the upstream tool if supported.
+- Compat ingest is disabled by default (`compatIngestEnabled: false`).
+
+## Related settings
+
+| Setting | Location |
+|---------|----------|
+| `compatIngestEnabled` | Appliance → AI & Integrations |
+| AI providers | [ai-providers.md](ai-providers.md) |

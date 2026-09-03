@@ -1,65 +1,149 @@
-# TrunkScope operations
+# Operations
 
-## Health and lifecycle
+Day-to-day operation of a TrunkScope appliance: health checks, backup, retention, and acceptance testing.
 
-The control plane exposes `/api/v1/health/live` for process liveness and
-`/api/v1/health/ready` for dependency readiness. `/api/v1/runtime` reports the
-decoder connection, receiver states, active calls, AI enablement, and call
-storage path.
+## Health endpoints
 
-Receiver controls are administrator-only:
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/v1/health` | Basic up |
+| `GET /api/v1/health/live` | Process liveness |
+| `GET /api/v1/health/ready` | Ready to serve |
+| `GET /api/v1/runtime` | Decoder connection, receiver states, AI worker, queue depth |
+| `GET /api/v1/diagnostics` | Capture, decoder, recording, ingestion, AI component detail |
 
-- `POST /api/v1/receivers/{id}/probe`
-- `POST /api/v1/receivers/{id}/start`
-- `POST /api/v1/receivers/{id}/stop`
-- `POST /api/v1/receivers/{id}/restart`
+Example:
 
-Settings are persisted in `TRUNKSCOPE_SETTINGS_PATH` (by default inside the
-audio volume). Radio and AI changes are loaded on the next control-plane
-restart; map and privacy policy changes apply immediately.
+```bash
+curl -s http://APPLIANCE:18088/api/v1/diagnostics | jq .
+```
 
-## Scan lists
+Key diagnostics fields:
 
-Scan lists are persisted in `TRUNKSCOPE_SCAN_LISTS_PATH`. Each channel has its
-own dwell, priority, lockout, squelch, and optional CTCSS/DCS tone. A required
-tone rejects traffic when the decoder does not report a matching tone. Decoder
-events support exact CTCSS and DCS matching; the native radiod path currently
-reports CTCSS only, so DCS-required profiles must use a decoder that supplies
-the DCS code. Keep
-SoapyRemote on a trusted LAN or VPN; it does not provide authentication or
-encryption.
+- `decoder.state` — Trunk Recorder connectivity
+- `decoderControlLockAgeSeconds` — last control-channel lock signal
+- `ai.state` / `aiFailureReason` — worker status
+- `simulated` — `true` only in simulator mode
 
-## Audio and privacy
+## Receiver lifecycle (admin)
 
-`GET /api/v1/audio/{id}` requires an administrator session or the configured
-audio bearer token and supports HTTP byte ranges for browser playback. Calls
-marked encrypted never receive an audio asset or AI processing. Public feeds
-remain disabled until an explicit allowlist is configured.
+| Action | Endpoint |
+|--------|----------|
+| Probe | `POST /api/v1/receivers/{id}/probe` |
+| Start | `POST /api/v1/receivers/{id}/start` |
+| Stop | `POST /api/v1/receivers/{id}/stop` |
+| Restart | `POST /api/v1/receivers/{id}/restart` |
+
+In **decoder** mode the visible receiver represents the SDR path consumed by Trunk Recorder.
+
+## Settings apply behavior
+
+| Change | When it applies |
+|--------|-----------------|
+| Map center, privacy policy, AI URLs | Immediately (workers re-read settings per call) |
+| Radio device, mode, decoder profiles | After save; decoder config regenerated; may need controlled restart |
+| Scan lists (radiod mode) | On scan list start/stop |
 
 ## Backup
 
-Back up the PostgreSQL volume plus the audio volume, including `settings.json`,
-`systems.json`, and `scan-lists.json`. Restore volumes before starting the
-control plane so persisted configuration is loaded during initialization.
+Back up the **entire appdata volume** (`/var/lib/trunkscope`):
 
-Run `scripts/retention-cleanup.sh` on a schedule with
-`TRUNKSCOPE_RETENTION_DRY_RUN=true` first; set it to `false` only after reviewing
-the candidate list. The script refuses paths outside the TrunkScope call volume.
-Run `scripts/backup.sh /path/to/backups` to archive deployment configuration;
-database and object-storage volumes still require their platform-native backup.
-The backup emits a SHA-256 manifest. To verify a restore without touching the
-live appliance, run `scripts/restore-config.sh ARCHIVE.tar.gz /tmp/trunkscope-restore`
-and review the staged files before restarting services.
-## Acceptance harness
+| Critical paths | Contents |
+|----------------|----------|
+| `trunkscope.db` | Call archive |
+| `calls/` | WAV recordings |
+| `audio/settings.json` | Operator configuration |
+| `audio/systems.json` | Radio profiles |
+| `audio/talkgroups.json` | Talkgroup catalog |
+| `audio/auth.json` | Administrator credentials |
+| `calls-export.json` | JSON export snapshot |
 
-Run the software-observable checks with an authenticated session:
+### Snapshot on Unraid
 
-```sh
-TRUNKSCOPE_URL=http://trunkscope:18088 \
-TRUNKSCOPE_CREDENTIAL_FILE=/secure/path/admin-credentials.json \
+Stop the container (optional but safest), copy `/mnt/user/appdata/trunkscope`, restart.
+
+### Config-only archive
+
+```bash
+scripts/backup.sh /path/to/backups
+```
+
+Review staged output with `scripts/restore-config.sh` before applying to a live appliance.
+
+## Retention
+
+Configured in **Appliance → AI & Integrations → Retention**:
+
+| Setting | Default | Worker behavior |
+|---------|---------|-----------------|
+| Audio days | 30 | Delete WAV files; clear audio reference |
+| Transcript days | 365 | Strip transcript and summary |
+| Metadata days | 365 | Remove call row from SQLite and memory |
+
+Hourly in-process worker. Manual purge via **Archive** with one-level undo.
+
+Preview candidates (dry run):
+
+```bash
+TRUNKSCOPE_RETENTION_DRY_RUN=true scripts/retention-cleanup.sh
+```
+
+## Scan lists (radiod mode)
+
+Persisted in `audio/scan-lists.json`. Each channel supports dwell, priority, lockout, squelch, and optional CTCSS/DCS.
+
+Tone-required channels reject traffic when the decoder does not report a matching tone. DCS matching requires a decoder path that supplies DCS metadata.
+
+## Audio access
+
+`GET /api/v1/calls/{id}/audio` requires administrator session or configured bearer token. Supports HTTP range requests for browser playback.
+
+Encrypted calls return no audio asset.
+
+## Software acceptance harness
+
+```bash
+TRUNKSCOPE_URL=http://APPLIANCE:18088 \
+TRUNKSCOPE_CREDENTIAL_FILE=/secure/admin-credentials.json \
 python scripts/verified-hardware-acceptance.py
 ```
 
-The harness deliberately records live-event evidence separately. A quiet
-radio system can pass process/storage checks while still leaving the
-transmission-dependent gate pending.
+Output: `hardware-acceptance.json` in the working directory.
+
+The harness validates process health, auth, decoder connectivity, and ingestion — not RF tone matching. Physical gates: [rf-acceptance.md](rf-acceptance.md).
+
+## Logs
+
+```bash
+docker logs trunkscope -f --tail 200
+```
+
+Trunk Recorder and control plane log to stdout inside the container.
+
+## Upgrades
+
+```bash
+docker compose -f deploy/appliance.yml pull
+docker compose -f deploy/appliance.yml up -d
+```
+
+Appdata persists across image updates. Verify `/api/v1/health/ready` after upgrade.
+
+## Security operations
+
+- Rotate password: **Appliance → Security**
+- Disable `TRUNKSCOPE_LOCAL_ONLY` before any port exposure beyond trusted LAN
+- Never commit `auth.json` or API keys to git
+- Restrict `/api/call-upload` to trusted networks when compat ingest is enabled
+
+## Failure recovery
+
+| Failure | Recovery |
+|---------|----------|
+| SDR unplugged | Replug USB; restart container if device node missing |
+| Trunk Recorder stuck | Restart container; check `audio/decoder/config.json` |
+| AI provider down | Calls still record; AI queue retries; fix URL and test in Integrations |
+| Corrupt settings | Restore `audio/settings.json` from backup |
+| Lost database | Restore `trunkscope.db` or import `calls-export.json` (metadata only) |
+
+See [troubleshooting.md](troubleshooting.md).

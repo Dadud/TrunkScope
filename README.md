@@ -1,51 +1,61 @@
 # TrunkScope
 
-TrunkScope is a clean-sheet, receive-only SDR scanner appliance. The first release targets
-P25 Phase 1/2 and conventional NFM on Linux with RTL-SDR, Airspy, and SDRplay receivers.
+TrunkScope is a receive-only SDR scanner appliance for P25 Phase 1/2 trunking and conventional NFM/FM. It targets RTL-SDR, Airspy, and SDRplay hardware on Linux, with a map-centric operator console, call archive, and optional external AI.
 
-## Quick start (recommended)
+## Install
 
-The **single-container appliance** is the only supported operator install path. See [docs/appliance-install.md](docs/appliance-install.md).
+The **single-container appliance** is the only supported operator path:
 
 ```bash
 docker compose -f deploy/appliance.yml up -d --build
 ```
 
-Open `http://127.0.0.1:18088`. On Unraid, import
-[`deploy/unraid/trunkscope.xml`](deploy/unraid/trunkscope.xml).
+Open `http://127.0.0.1:18088` (or your host port). On Unraid, import [`deploy/unraid/trunkscope.xml`](deploy/unraid/trunkscope.xml).
 
-External AI (Speaches, Ollama, vLLM, or cloud APIs) is configured in the web UI or via env vars — it is never bundled in the image.
+Full instructions: **[docs/installation.md](docs/installation.md)**
 
-### Docker Compose multi-service stack (deferred)
+## What you need
 
-The full Compose stack (Postgres, MinIO, multi-service) in `deploy/compose.yml` is **deferred** — kept for development reference only, not documented as an install path.
+| Component | Required? | Notes |
+|-----------|-----------|-------|
+| Linux host with Docker | Yes | Unraid, mini-PC, or VM |
+| USB SDR | For live RF | RTL-SDR, Airspy, or SDRplay RSP1B |
+| One appdata volume | Yes | `/var/lib/trunkscope` — settings, SQLite, WAVs |
+| External AI | Optional | Speaches/Ollama on LAN, or cloud APIs |
 
-## RSP1B over LAN
+AI is **never bundled** in the image. Configure transcription, summary, and geocoding in the web UI (**Appliance → AI & Integrations**) or via environment variables. Use your **LAN IP** for service URLs inside Docker, not `localhost`.
 
-The receiver laptop runs only SDRplay's vendor API and SoapyRemote. The main
-Linux appliance owns Trunk Recorder, P25/NFM decoding, recording, transcription,
-and summaries. On the laptop, install SDRplay API v3.15+ and SoapySDRPlay3, then
-run `scripts/rsp1b-preflight.sh LAPTOP_LAN_IP`. On the appliance, install
-SoapySDR tools and run `scripts/main-preflight.sh LAPTOP_LAN_IP` before enabling
-the decoder profile. Copy `deploy/decoder/config.example.json` to
-`deploy/decoder/config.json` and replace the example control channel/system.
+## Documentation
 
-SoapyRemote has no authentication or encryption; keep port 55132 on a trusted
-LAN or VPN and never expose it directly to the internet.
+| Topic | Link |
+|-------|------|
+| **All docs (index)** | [docs/README.md](docs/README.md) |
+| Installation & Unraid | [docs/installation.md](docs/installation.md) |
+| Settings & environment | [docs/configuration.md](docs/configuration.md) |
+| AI provider setup | [docs/ai-providers.md](docs/ai-providers.md) |
+| Backup, health, retention | [docs/operations.md](docs/operations.md) |
+| RadioReference CSV import | [docs/imports.md](docs/imports.md) |
+| DMR via external decoder | [docs/dmr-ingest.md](docs/dmr-ingest.md) |
+| Architecture | [docs/architecture.md](docs/architecture.md) |
+| Development | [docs/development.md](docs/development.md) |
 
-## Safety defaults
+## Remote SDR (optional)
 
-- Transmission is not implemented.
-- Public feeds are disabled until an administrator explicitly enables a policy.
-- Encrypted calls retain metadata only and never expose audio.
-- Audio defaults to 30-day retention; metadata defaults to 365 days.
+An RSP1B can stay on a laptop running SoapyRemote; the appliance decodes over the LAN. See [docs/installation.md#remote-sdr-soapyremote](docs/installation.md#remote-sdr-soapyremote). Keep port `55132` on a trusted LAN or VPN only.
 
-See [docs/architecture.md](docs/architecture.md) and [docs/development.md](docs/development.md).
-Operational health, lifecycle, scan-list, audio, privacy, and backup procedures are in
-[docs/operations.md](docs/operations.md).
-If Docker Desktop cannot start its Linux engine, see
-[docs/docker-troubleshooting.md](docs/docker-troubleshooting.md).
+## Development
+
+```bash
+cargo test --workspace
+pnpm install && pnpm --filter @trunkscope/web test && pnpm --filter @trunkscope/web build
+```
+
+Details: [docs/development.md](docs/development.md)
+
+## Deferred: multi-service Compose
+
+[`deploy/compose.yml`](deploy/compose.yml) (Postgres, MinIO, separate services) remains in the repository for development reference. **Do not use it for production appliance installs.**
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+GPL-3.0-or-later — see [LICENSE](LICENSE).

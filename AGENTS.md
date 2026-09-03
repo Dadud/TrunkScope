@@ -4,7 +4,7 @@ This file is the durable project brief for future agents. Treat it as context an
 
 ## Project objective
 
-TrunkScope is a self-hosted, receive-only SDR scanner appliance. Docker Compose is the primary installation path; Unraid is the tested secondary path. The main appliance owns decoding, recording, transcription, summarization, storage, archive publication policy, and the web/mobile UI.
+TrunkScope is a self-hosted, receive-only SDR scanner appliance. The **single-container appliance** (`deploy/appliance.yml`, Unraid template) is the only supported operator install path. Unraid is the primary tested deployment target.
 
 Supported targets:
 
@@ -20,13 +20,13 @@ Supported targets:
 - `apps/web`: React/Vite responsive operator console and mobile UI.
 - `native/radiod`: native SDR capture boundary and simulator contract.
 - `crates/domain`: shared radio, call, policy, settings, and conversation types.
-- `deploy/compose.yml`: reference Docker Compose stack.
-- `Dockerfile` / `deploy/appliance.yml`: single-container appliance (control plane, web UI, Trunk Recorder).
+- `deploy/appliance.yml`: **supported** single-container operator install.
+- `deploy/compose.yml`: deferred multi-service stack (development reference only).
 - `deploy/unraid`: Unraid setup, Community Applications XML template, and operational documentation.
 - `deploy/receiver-node`: optional remote SoapyRemote receiver deployment.
 - `deploy/decoder`: Trunk Recorder configuration, fixtures, and generated profile documentation.
 - `scripts`: deployment, backup/restore, retention, failure injection, decoder generation, and hardware acceptance tools.
-- `docs`: completion status, operations, and RF acceptance procedures.
+- `docs`: operator and developer documentation — start at `docs/README.md`.
 
 ## Product decisions
 
@@ -113,7 +113,7 @@ cargo test --workspace
 pnpm --filter @trunkscope/web lint
 pnpm --filter @trunkscope/web test
 pnpm --filter @trunkscope/web build
-docker compose -f deploy/compose.yml config --quiet
+docker compose -f deploy/appliance.yml config --quiet
 ```
 
 Hardware acceptance should use `scripts/verified-hardware-acceptance.py` and the procedure in `docs/rf-acceptance.md`. A true completion claim requires physical proof for:

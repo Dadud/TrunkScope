@@ -17,11 +17,13 @@ If startup reports an Inference Manager error for
 
    The second value must be `linux`.
 
-4. Validate and build TrunkScope:
+4. Validate and build the **appliance** image:
 
    ```bash
-   docker compose -f deploy/compose.yml config --quiet
-   docker compose -f deploy/compose.yml build
+   docker compose -f deploy/appliance.yml config --quiet
+   docker compose -f deploy/appliance.yml build
    ```
 
 Do not expose the SoapyRemote port (`55132`) outside the trusted LAN or VPN.
+
+See also: [troubleshooting.md](troubleshooting.md)
