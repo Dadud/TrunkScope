@@ -21,7 +21,8 @@ Supported targets:
 - `native/radiod`: native SDR capture boundary and simulator contract.
 - `crates/domain`: shared radio, call, policy, settings, and conversation types.
 - `deploy/compose.yml`: reference Docker Compose stack.
-- `deploy/unraid`: Unraid setup and operational documentation.
+- `Dockerfile` / `deploy/appliance.yml`: single-container appliance (control plane, web UI, Trunk Recorder).
+- `deploy/unraid`: Unraid setup, Community Applications XML template, and operational documentation.
 - `deploy/receiver-node`: optional remote SoapyRemote receiver deployment.
 - `deploy/decoder`: Trunk Recorder configuration, fixtures, and generated profile documentation.
 - `scripts`: deployment, backup/restore, retention, failure injection, decoder generation, and hardware acceptance tools.
@@ -79,7 +80,8 @@ Supported targets:
 
 ### Deployment and authentication
 
-- Docker Compose is the reference deployment.
+- Docker Compose is the full multi-service reference stack.
+- The single-container appliance (`Dockerfile`, Unraid `trunkscope.xml`) is the USB-passthrough install path: one volume, one published port, Trunk Recorder + control plane + web UI.
 - Unraid synchronization/build tooling is in `scripts/unraid-deploy.py`.
 - The deployment script must use `--env-file .env -f deploy/compose.yml` and run from the app root.
 - SDRplay vendor runtime is mounted from the configured Unraid path and USB access is isolated to the vendor service.

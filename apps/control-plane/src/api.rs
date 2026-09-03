@@ -12,7 +12,11 @@ use axum::{
     routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::CorsLayer,
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
 use trunkscope_domain::{
     Call, PublicationPolicy, Receiver, ReceiverCapabilities, ReceiverDriver, ReceiverHealth,
     ReceiverState, Talkgroup,
@@ -21,7 +25,7 @@ use trunkscope_domain::{
 use crate::state::{AppSettings, AppState, ScanList, SystemProfile};
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let mut app = Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/health/live", get(liveness))
         .route("/api/v1/health/ready", get(readiness))
@@ -107,9 +111,25 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/settings", get(settings).put(save_settings))
         .route("/api/v1/live", get(live))
         .route("/api/v1/decoder/status", get(crate::decoder::status_socket))
+        .route("/api/v1/decoder/ingest", post(decoder_ingest))
         .with_state(state)
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http());
+
+    // When TRUNKSCOPE_WEB_DIST points to the pre-built React SPA assets,
+    // serve them directly from the control-plane binary (single-container
+    // mode). All non-API requests fall through to index.html for client-
+    // side routing.
+    if let Ok(dist) = std::env::var("TRUNKSCOPE_WEB_DIST") {
+        if !dist.trim().is_empty() {
+            let serve = ServeDir::new(&dist)
+                .fallback(ServeFile::new(std::path::Path::new(&dist).join("index.html")));
+            app = app.fallback_service(serve);
+            tracing::info!(path = %dist, "serving embedded web UI");
+        }
+    }
+
+    app
 }
 
 #[derive(Serialize)]
@@ -535,17 +555,19 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
             } else {
                 system.control_channels_hz.clone()
             };
-            serde_json::json!({
+            let mut configured = serde_json::json!({
                 "type": "p25", "shortName": system.name,
                 "control_channels": control_channels,
                 "sites": selected_sites,
                 "modulation": "qpsk", "squelch": -60, "recordUnknown": true, "hideEncrypted": false,
                 "talkgroupsFile": talkgroups_file,
-            })
+            });
+            attach_upload_script(&mut configured);
+            configured
         })
         .collect();
     if systems.iter().any(|system| system.protocol == "analog-fm") {
-        configured_systems.push(serde_json::json!({
+        let mut conventional = serde_json::json!({
             "type": "conventional",
             "shortName": "Jackson County FM",
             "channelFile": "/generated/decoder/analog-channels.csv",
@@ -554,14 +576,35 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
             "deemphasisTau": 0.000750,
             "decodeMDC": false,
             "decodeFSync": false,
-        }));
+        });
+        attach_upload_script(&mut conventional);
+        configured_systems.push(conventional);
     }
+    let status_server = decoder_status_server();
     serde_json::json!({
         "ver": 2, "captureDir": "/var/lib/trunkscope/calls",
-        "statusServer": "ws://control-plane:8080/api/v1/decoder/status",
+        "statusServer": status_server,
         "audioArchive": true, "callLog": true, "softVocoder": true,
         "sources": [source], "systems": configured_systems,
     })
+}
+
+fn attach_upload_script(system: &mut serde_json::Value) {
+    if let Some(script) = std::env::var("TRUNKSCOPE_UPLOAD_SCRIPT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        system["uploadScript"] = serde_json::Value::String(script);
+    }
+}
+
+fn decoder_status_server() -> String {
+    std::env::var("TRUNKSCOPE_STATUS_SERVER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "ws://127.0.0.1:8080/api/v1/decoder/status".into())
 }
 
 pub fn write_decoder_config(state: &Arc<AppState>) {
@@ -615,6 +658,28 @@ fn write_analog_channel_file(
 
 async fn decoder_config(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(decoder_config_value(&state))
+}
+
+/// Instant post-call hook for Trunk Recorder `uploadScript`.
+/// The sidecar JSON is POSTed as the body; `X-Sidecar-Path` is the JSON
+/// file path so adjacent `.wav` names can be resolved the same way as the
+/// directory poller.
+async fn decoder_ingest(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: String,
+) -> StatusCode {
+    let payload = headers
+        .get("x-sidecar-path")
+        .and_then(|value| value.to_str().ok())
+        .map(std::path::PathBuf::from)
+        .and_then(|path| crate::file_ingest::normalize_sidecar(&body, &path))
+        .unwrap_or(body);
+    if crate::decoder::ingest_status_payload(&state, &payload) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::BAD_REQUEST
+    }
 }
 
 #[derive(Serialize)]
@@ -2523,6 +2588,65 @@ mod tests {
             "/generated/decoder/analog-channels.csv"
         );
         assert!(config["sources"][0]["center"].as_u64().unwrap() > 150_000_000);
+        assert!(
+            config["statusServer"]
+                .as_str()
+                .unwrap()
+                .ends_with("/api/v1/decoder/status")
+        );
+        assert!(systems[0].get("uploadScript").is_none());
+    }
+
+    #[test]
+    fn decoder_status_server_defaults_to_localhost() {
+        if std::env::var("TRUNKSCOPE_STATUS_SERVER")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .is_some()
+        {
+            return;
+        }
+        assert_eq!(
+            decoder_status_server(),
+            "ws://127.0.0.1:8080/api/v1/decoder/status"
+        );
+    }
+
+    #[tokio::test]
+    async fn decoder_ingest_accepts_trunk_recorder_sidecar() {
+        let state = Arc::new(AppState::new());
+        let sidecar = r#"{"freq":851012500,"talkgroup":1001,"start_time":1710000000,"stop_time":1710000004,"short_name":"Metro","talkgroup_tag":"Fire","encrypted":0}"#;
+        let response = router(Arc::clone(&state))
+            .oneshot(
+                Request::post("/api/v1/decoder/ingest")
+                    .header("content-type", "application/json")
+                    .header(
+                        "x-sidecar-path",
+                        "/var/lib/trunkscope/calls/2026-09-01/call.json",
+                    )
+                    .body(Body::from(sidecar))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let calls = state.calls.read().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].talkgroup_id, 1001);
+    }
+
+    #[tokio::test]
+    async fn decoder_ingest_rejects_invalid_payload() {
+        let response = router(Arc::new(AppState::new()))
+            .oneshot(
+                Request::post("/api/v1/decoder/ingest")
+                    .header("content-type", "application/json")
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

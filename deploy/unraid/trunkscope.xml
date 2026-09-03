@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>TrunkScope</Name>
+  <Repository>ghcr.io/dadud/trunkscope:latest</Repository>
+  <Registry>https://github.com/Dadud/TrunkScope/pkgs/container/trunkscope</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Dadud/TrunkScope/issues</Support>
+  <Project>https://github.com/Dadud/TrunkScope</Project>
+  <Overview>Self-hosted receive-only SDR scanner. Pass a USB SDR and one appdata folder; the container serves the operator console, control plane, and Trunk Recorder P25/FM decoder on a single port. Public feeds stay disabled. Encrypted calls keep metadata only. Optional transcription/summary talk to existing Ollama or Whisper containers — they are not bundled.</Overview>
+  <Category>MediaApp:Other Status:Beta</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/Dadud/TrunkScope/main/deploy/unraid/trunkscope.xml</TemplateURL>
+  <Icon/>
+  <ExtraParams>--shm-size=256m --ipc=host</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>USB SDR (RTL-SDR, Airspy, or SDRplay with vendor runtime mounted at /opt/sdrplay). Keep the published port on a trusted LAN/VPN.</Requires>
+  <Config Name="WebUI" Target="8080" Default="18088" Mode="tcp" Description="Host port for the TrunkScope console (18088 avoids the common Unraid 8088 collision)." Type="Port" Display="always" Required="true" Mask="false">18088</Config>
+  <Config Name="Appdata" Target="/var/lib/trunkscope" Default="/mnt/user/appdata/trunkscope" Mode="rw" Description="Persistent settings, decoder config, and call recordings." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/trunkscope</Config>
+  <Config Name="USB SDR" Target="" Default="/dev/bus/usb" Mode="" Description="Pass the host USB bus to the container so a local RTL-SDR, Airspy, or SDRplay can be opened." Type="Device" Display="always" Required="false" Mask="false">/dev/bus/usb</Config>
+  <Config Name="SDRplay runtime" Target="/opt/sdrplay" Default="" Mode="ro" Description="Optional licensed SDRplay API runtime (for example /mnt/user/appdata/trunkscope/sdrplay). Leave empty for RTL-SDR or Airspy." Type="Path" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Radio mode" Target="TRUNKSCOPE_RADIO_MODE" Default="decoder" Mode="" Description="decoder uses Trunk Recorder for P25/FM. Use simulator only for a hardware-free smoke test." Type="Variable" Display="always" Required="true" Mask="false">decoder</Config>
+  <Config Name="Local-only access" Target="TRUNKSCOPE_LOCAL_ONLY" Default="false" Mode="" Description="When true, skip login and grant administrator access to anyone who can reach the port. Disable on any untrusted network." Type="Variable" Display="always" Required="false" Mask="false">false</Config>
+  <Config Name="Site filter" Target="TRUNKSCOPE_SITE_FILTER" Default="" Mode="" Description="Optional site-name substring filter for imported P25 systems (for example Black River Falls)." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Radio device" Target="TRUNKSCOPE_RADIO_DEVICE" Default="soapy=0,driver=rtlsdr" Mode="" Description="Soapy/osmosdr device string. Examples: soapy=0,driver=rtlsdr or soapy=0,driver=sdrplay" Type="Variable" Display="always" Required="false" Mask="false">soapy=0,driver=rtlsdr</Config>
+  <Config Name="Sample rate Hz" Target="TRUNKSCOPE_RADIO_SAMPLE_RATE_HZ" Default="2400000" Mode="" Description="Capture sample rate used when generating Trunk Recorder source config." Type="Variable" Display="advanced" Required="false" Mask="false">2400000</Config>
+  <Config Name="PPM" Target="TRUNKSCOPE_RADIO_PPM" Default="0" Mode="" Description="Frequency correction in PPM." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="Transcribe URL" Target="TRUNKSCOPE_TRANSCRIBE_URL" Default="" Mode="" Description="Optional Speaches/Whisper endpoint, for example http://speaches:8000/v1/audio/transcriptions" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Summary URL" Target="TRUNKSCOPE_SUMMARY_URL" Default="" Mode="" Description="Optional Ollama generate endpoint, for example http://192.168.1.4:11434/api/generate" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Summary model" Target="TRUNKSCOPE_SUMMARY_MODEL" Default="llama3.2:3b" Mode="" Description="Ollama model name when TRUNKSCOPE_SUMMARY_URL is set." Type="Variable" Display="advanced" Required="false" Mask="false">llama3.2:3b</Config>
+  <Config Name="AI enabled" Target="TRUNKSCOPE_AI_ENABLED" Default="false" Mode="" Description="Enable transcription and summary workers. Requires the transcribe/summary URLs." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+</Container>

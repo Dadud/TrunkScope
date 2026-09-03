@@ -16,10 +16,43 @@ This repository currently contains the first executable vertical slice:
 
 Requirements: Rust 1.88+, Node 22+, pnpm 10+, and Docker for the appliance path.
 
-Docker Compose on a Linux host is the primary supported installation method. It
+### Single-container appliance (USB SDR)
+
+The all-in-one image serves the operator console, control plane, and Trunk
+Recorder on port `8080`. Mount one appdata directory and pass `/dev/bus/usb`.
+Ollama and Whisper stay optional external services.
+
+```bash
+docker compose -f deploy/appliance.yml up -d --build
+```
+
+Or, after GitHub Actions publishes the image:
+
+```bash
+docker run --name trunkscope --restart unless-stopped \
+  -p 18088:8080 \
+  --device /dev/bus/usb \
+  --shm-size 256m --ipc host \
+  -v trunkscope-data:/var/lib/trunkscope \
+  ghcr.io/dadud/trunkscope:latest
+```
+
+Open `http://127.0.0.1:18088`. On Unraid, import
+[`deploy/unraid/trunkscope.xml`](deploy/unraid/trunkscope.xml) and map host port
+`18088`. Set `TRUNKSCOPE_RADIO_DEVICE` to match the stick (`soapy=0,driver=rtlsdr`,
+`soapy=0,driver=airspy`, or `soapy=0,driver=sdrplay`). SDRplay also needs the
+licensed vendor runtime mounted at `/opt/sdrplay`.
+
+Trunk Recorder connects to `ws://127.0.0.1:8080/api/v1/decoder/status` and posts
+finished call sidecars to `/api/v1/decoder/ingest`.
+
+### Docker Compose stack
+
+Docker Compose on a Linux host remains the full multi-service installation
+(PostgreSQL, optional MinIO, separate web/nginx, and optional AI profiles). It
 works on a standard Linux server, mini-PC, or VM and is the reference path for
-testing and upgrades. Unraid is a secondary deployment option using the same
-Compose stack and is documented in [deploy/unraid/README.md](deploy/unraid/README.md).
+testing and upgrades. Unraid can also run this stack; see
+[deploy/unraid/README.md](deploy/unraid/README.md).
 
 ```bash
 cp .env.example .env

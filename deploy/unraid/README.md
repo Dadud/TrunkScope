@@ -1,8 +1,50 @@
-# TrunkScope on Unraid (secondary deployment)
+# TrunkScope on Unraid
 
-Docker Compose on a standard Linux host is the primary TrunkScope installation
-method. Use this Unraid guide when you want Unraid to own the appliance and its
-storage; it follows the same images, environment variables, and upgrade path.
+There are two Unraid paths:
+
+1. **Single-container template** (recommended for a USB SDR on the Unraid box).
+2. **Compose Manager stack** (full PostgreSQL / optional AI profile, same as a
+   generic Linux host).
+
+## Single-container template
+
+Import [`trunkscope.xml`](trunkscope.xml) in Unraid Docker (Add Container →
+template, or Community Applications if published). The template:
+
+- Pulls `ghcr.io/dadud/trunkscope:latest` (or build locally with
+  `docker compose -f deploy/appliance.yml build`).
+- Maps host `18088` → container `8080`.
+- Mounts `/mnt/user/appdata/trunkscope` → `/var/lib/trunkscope`.
+- Passes `/dev/bus/usb` for a local RTL-SDR, Airspy, or SDRplay.
+- Defaults to `TRUNKSCOPE_RADIO_MODE=decoder` so Trunk Recorder starts with the
+  control plane.
+
+For SDRplay RSP1B, mount the licensed API runtime read-only at `/opt/sdrplay`
+(the tested layout is `/mnt/user/appdata/trunkscope/sdrplay`) and set
+`TRUNKSCOPE_RADIO_DEVICE=soapy=0,driver=sdrplay`. RTL-SDR and Airspy do not need
+that mount.
+
+Optional transcription and operations summaries use existing Unraid containers
+or remote hosts via `TRUNKSCOPE_TRANSCRIBE_URL` and `TRUNKSCOPE_SUMMARY_URL`.
+Those models are not bundled in the appliance image.
+
+`TRUNKSCOPE_LOCAL_ONLY=true` skips login and grants administrator access to
+anyone who can reach the port. Leave it false unless the published port is
+restricted to a trusted LAN/VPN.
+
+To build the image on Unraid instead of pulling GHCR:
+
+```bash
+cd /mnt/user/appdata/trunkscope/repo
+docker compose -f deploy/appliance.yml build
+docker compose -f deploy/appliance.yml up -d
+```
+
+## Compose Manager stack (full services)
+
+Docker Compose on a standard Linux host is the full-stack installation
+method. Use this Unraid guide when you want Unraid to own PostgreSQL, MinIO,
+and optional AI services using the same images as `deploy/compose.yml`.
 
 Unraid is the main appliance: it runs the web UI, control plane, PostgreSQL,
 Trunk Recorder, and optional AI services. The RSP1B remains attached to a Linux

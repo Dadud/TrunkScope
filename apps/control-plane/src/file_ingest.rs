@@ -56,7 +56,7 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
-fn normalize_sidecar(payload: &str, path: &Path) -> Option<String> {
+pub(crate) fn normalize_sidecar(payload: &str, path: &Path) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(payload).ok()?;
     if value.get("type").is_some() {
         return None;

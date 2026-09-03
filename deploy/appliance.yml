@@ -1,0 +1,36 @@
+name: trunkscope-appliance
+
+services:
+  trunkscope:
+    image: ${TRUNKSCOPE_IMAGE:-ghcr.io/dadud/trunkscope:latest}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "${TRUNKSCOPE_HTTP_PORT:-18088}:8080"
+    environment:
+      TRUNKSCOPE_RADIO_MODE: ${TRUNKSCOPE_RADIO_MODE:-decoder}
+      TRUNKSCOPE_RADIO_DEVICE: ${TRUNKSCOPE_RADIO_DEVICE:-soapy=0,driver=rtlsdr}
+      TRUNKSCOPE_SITE_FILTER: ${TRUNKSCOPE_SITE_FILTER:-}
+      TRUNKSCOPE_LOCAL_ONLY: ${TRUNKSCOPE_LOCAL_ONLY:-false}
+      TRUNKSCOPE_AI_ENABLED: ${TRUNKSCOPE_AI_ENABLED:-false}
+      TRUNKSCOPE_TRANSCRIBE_URL: ${TRUNKSCOPE_TRANSCRIBE_URL:-}
+      TRUNKSCOPE_SUMMARY_URL: ${TRUNKSCOPE_SUMMARY_URL:-}
+      TRUNKSCOPE_SUMMARY_MODEL: ${TRUNKSCOPE_SUMMARY_MODEL:-llama3.2:3b}
+      LD_LIBRARY_PATH: /opt/sdrplay/lib
+      SOAPY_SDR_PLUGIN_PATH: /opt/sdrplay/lib/SoapySDR/modules0.8
+    volumes:
+      - ${TRUNKSCOPE_APPDATA:-trunkscope-data}:/var/lib/trunkscope
+      - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
+    devices:
+      - ${TRUNKSCOPE_USB_DEVICES:-/dev/bus/usb:/dev/bus/usb}
+    ipc: host
+    shm_size: 256m
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    restart: unless-stopped
+
+volumes:
+  trunkscope-data:
