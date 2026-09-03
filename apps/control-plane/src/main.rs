@@ -1,4 +1,5 @@
 mod api;
+mod apply;
 mod auth;
 mod decoder;
 mod file_ingest;
@@ -110,6 +111,10 @@ async fn main() -> Result<()> {
             });
     }
     api::write_decoder_config(&state);
+    // The boot-time write is, by definition, what the supervised capture
+    // starts with; without this the apply task would bounce the decoder
+    // seconds after every container start.
+    state.mark_config_applied();
     processor::spawn(Arc::clone(&state));
     file_ingest::spawn(Arc::clone(&state));
     // An enabled scan list is an operator intent, not merely UI metadata.
@@ -149,6 +154,9 @@ async fn main() -> Result<()> {
             "TRUNKSCOPE_RADIO_MODE must be simulator, radiod, or decoder; got {other}"
         ),
     }
+    // Watches config generations so saves reach the running pipeline without a
+    // manual restart. Started after the mode worker so both see the same state.
+    apply::spawn(Arc::clone(&state));
 
     let bind = env::var("TRUNKSCOPE_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let address: SocketAddr = bind.parse().context("TRUNKSCOPE_BIND must be host:port")?;

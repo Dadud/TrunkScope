@@ -1,6 +1,7 @@
 import { useState, useEffect, type ChangeEvent } from "react";
 import type { Receiver, Snapshot } from "../types";
 import {
+  applyDecoderConfig,
   changePassword,
   createReceiver,
   deleteReceiver,
@@ -366,7 +367,7 @@ export function ApplianceDrawer({
       const updated = await updateReceiver(id, receiverDraft);
       onUpdateReceiver(updated);
       setEditingReceiverId(null);
-      setStatusMessage("Receiver settings saved. Restart receiver to apply.");
+      setStatusMessage("Receiver settings saved — the capture reloads automatically.");
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : "Save failed");
     }
@@ -515,7 +516,7 @@ export function ApplianceDrawer({
           {activeTab === "radio" && settings && (
             <div className="tab-pane">
               <h3>Radio Mode & Tuning</h3>
-              <p className="pane-desc">Persisted radio settings drive decoder generation and receiver defaults. Restart receiver/decoder after saving.</p>
+              <p className="pane-desc">Persisted radio settings drive decoder generation and receiver defaults. Saves apply automatically — the capture reloads within a few seconds.</p>
               <div className="form-grid">
                 <label>Mode<select value={settings.radioMode} onChange={(e) => setSettings({ ...settings, radioMode: e.target.value })}><option value="simulator">Simulator</option><option value="radiod">radiod</option><option value="decoder">Decoder (Trunk Recorder)</option></select></label>
                 <label>Device<input value={settings.radioDevice} onChange={(e) => setSettings({ ...settings, radioDevice: e.target.value })} /></label>
@@ -1294,6 +1295,22 @@ export function ApplianceDrawer({
               <h3>Runtime Diagnostics</h3>
               {runtime && <div className="config-box"><span>Receivers: {runtime.receiverCount}</span><span>Decoder: {runtime.decoderConnected ? "connected" : "offline"}</span><span>AI: {runtime.aiWorkerStatus ?? "unknown"}</span><span>Queue backlog: {runtime.queueBacklog ?? 0}</span><span>Storage: {runtime.storagePath ?? "unknown"}</span><span>Persistence: {runtime.persistenceConnected ? "connected" : "file fallback"}</span><span>Active scan list: {runtime.activeScanList ?? "none"}</span></div>}
               {diagnostics && <div className="config-box"><span>Capture: {diagnostics.capture.state} — {diagnostics.capture.detail}</span><span>Decoder: {diagnostics.decoder.state} — {diagnostics.decoder.detail}</span><span>Recording: {diagnostics.recording.state}</span><span>Ingestion: {diagnostics.ingestion.state}</span><span>AI: {diagnostics.ai.state} — {diagnostics.ai.detail}</span><span>Image: {diagnostics.imageVersion ?? "unknown"}</span><span>Config hash: {diagnostics.configHash ?? "—"}</span><span>Process ID: {diagnostics.processId ?? "—"}</span><span>Decoder heartbeat age: {diagnostics.decoderHeartbeatAgeSeconds ?? "—"}s</span><span>Control lock age: {diagnostics.decoderControlLockAgeSeconds ?? "—"}s</span>{diagnostics.failureReason && <span>Failure: {diagnostics.failureReason}</span>}{diagnostics.aiFailureReason && <span>AI failure: {diagnostics.aiFailureReason}</span>}{diagnostics.simulated && <span className="live-tag">SIMULATED</span>}</div>}
+              <div className="btn-row">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await applyDecoderConfig();
+                      setStatusMessage("Apply requested — capture reloading with saved settings");
+                    } catch (error) {
+                      setStatusMessage(error instanceof Error ? error.message : "Apply failed");
+                    }
+                  }}
+                >
+                  {runtime?.decoderConfigPending ? "Apply pending changes now" : "Reload capture now"}
+                </button>
+                <span className="pane-desc">Saves apply automatically; this forces an immediate reload.</span>
+              </div>
               <h4>Decoder config preview</h4>
               <pre className="decoder-config-preview">{decoderConfig || "Decoder config unavailable"}</pre>
             </div>

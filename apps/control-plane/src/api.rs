@@ -35,6 +35,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/runtime", get(runtime))
         .route("/api/v1/diagnostics", get(diagnostics))
         .route("/api/v1/decoder/config", get(decoder_config))
+        .route("/api/v1/decoder/apply", post(decoder_apply))
         .route("/api/v1/audit", get(audit))
         .route(
             "/api/v1/auth/login",
@@ -234,6 +235,7 @@ struct RuntimeResponse {
     last_event: Option<chrono::DateTime<chrono::Utc>>,
     persistence_connected: bool,
     ai_worker_status: String,
+    decoder_config_pending: bool,
 }
 
 async fn runtime(State(state): State<Arc<AppState>>) -> Json<RuntimeResponse> {
@@ -299,6 +301,7 @@ async fn runtime(State(state): State<Arc<AppState>>) -> Json<RuntimeResponse> {
             .is_some()
             || crate::sqlite::db_path().is_file(),
         ai_worker_status,
+        decoder_config_pending: state.pending_apply(),
         active_call_count: calls
             .iter()
             .filter(|call| call.state == trunkscope_domain::CallState::Active)
@@ -748,6 +751,7 @@ fn decoder_status_server() -> String {
 }
 
 pub fn write_decoder_config(state: &Arc<AppState>) {
+    state.bump_config_generation();
     let path = std::env::var("TRUNKSCOPE_DECODER_CONFIG_PATH")
         .unwrap_or_else(|_| "/var/lib/trunkscope/audio/decoder/config.json".into());
     let path = std::path::PathBuf::from(path);
@@ -798,6 +802,42 @@ fn write_analog_channel_file(
 
 async fn decoder_config(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(decoder_config_value(&state))
+}
+
+/// Operator-triggered apply. Sets the force flag that the capture-mode apply
+/// task and the radiod supervise loop watch, so pending configuration is
+/// reloaded immediately instead of waiting for the next natural restart.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DecoderApplyResponse {
+    triggered: bool,
+    radio_mode: String,
+}
+
+async fn decoder_apply(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let radio_mode = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .radio_mode
+        .clone();
+    state.force_apply.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Make the request observable even when no worker is watching flags.
+    state.bump_config_generation();
+    (
+        StatusCode::OK,
+        Json(DecoderApplyResponse {
+            triggered: true,
+            radio_mode,
+        }),
+    )
+        .into_response()
 }
 
 /// Instant post-call hook for Trunk Recorder `uploadScript`.

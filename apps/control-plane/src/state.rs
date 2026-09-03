@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         Mutex, RwLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -405,6 +405,28 @@ pub struct AppState {
     pub persistence: RwLock<Option<crate::persistence::Sender>>,
     /// Recently purged calls kept for operator undo (bounded, in-memory).
     pub purge_undo: RwLock<Option<Vec<trunkscope_domain::Call>>>,
+    /// Monotonic counter bumped every time persisted radio configuration is
+    /// regenerated. Capture workers record the generation they are running so
+    /// the UI can honestly report "pending apply" instead of telling the
+    /// operator to manually restart.
+    pub config_generation: AtomicU64,
+    pub applied_generation: AtomicU64,
+    pub force_apply: AtomicBool,
+}
+
+impl AppState {
+    pub fn bump_config_generation(&self) -> u64 {
+        self.config_generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub fn mark_config_applied(&self) {
+        let current = self.config_generation.load(Ordering::SeqCst);
+        self.applied_generation.store(current, Ordering::SeqCst);
+    }
+
+    pub fn pending_apply(&self) -> bool {
+        self.config_generation.load(Ordering::SeqCst) > self.applied_generation.load(Ordering::SeqCst)
+    }
 }
 
 impl AppState {
@@ -653,6 +675,9 @@ impl AppState {
             processing,
             processing_queue,
             processing_queue_depth: AtomicUsize::new(0),
+            config_generation: AtomicU64::new(0),
+            applied_generation: AtomicU64::new(0),
+            force_apply: AtomicBool::new(false),
             processing_receiver: Mutex::new(Some(processing_receiver)),
             ai_worker_status: RwLock::new("disabled".into()),
             ai_last_error: RwLock::new(None),
@@ -886,6 +911,18 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_generation_tracks_pending_apply() {
+        let state = AppState::new();
+        assert!(!state.pending_apply());
+        state.mark_config_applied();
+        assert!(!state.pending_apply());
+        state.bump_config_generation();
+        assert!(state.pending_apply());
+        state.mark_config_applied();
+        assert!(!state.pending_apply());
+    }
 
     #[test]
     fn audit_log_is_bounded_and_newest_first() {

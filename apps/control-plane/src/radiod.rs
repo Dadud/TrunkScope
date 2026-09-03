@@ -174,6 +174,13 @@ pub fn spawn(state: Arc<AppState>) -> Result<()> {
                     continue;
                 }
             };
+            // The worker always rebuilds config from persisted settings at the
+            // top of the loop, so everything read here is by definition the
+            // applied generation.
+            state.mark_config_applied();
+            state
+                .force_apply
+                .store(false, std::sync::atomic::Ordering::SeqCst);
             set_state(&state, receiver_id, ReceiverState::Offline);
             let run = run_once(&state, receiver_id, &config);
             tokio::pin!(run);
@@ -191,6 +198,22 @@ pub fn spawn(state: Arc<AppState>) -> Result<()> {
                         Ok(ReceiverCommand::Start(id) | ReceiverCommand::Restart(id) | ReceiverCommand::Probe(id)) if id == receiver_id => { set_state(&state, receiver_id, ReceiverState::Probing); }
                         Ok(_) | Err(_) => {}
                     }
+                    true
+                }
+                // Persisted settings changed (or an apply was forced): drop the
+                // child so the loop rebuilds config and relaunches immediately
+                // instead of running stale RF settings until the next crash.
+                _ = async {
+                    loop {
+                        sleep(Duration::from_millis(1000)).await;
+                        if state.pending_apply()
+                            || state.force_apply.load(std::sync::atomic::Ordering::SeqCst)
+                        {
+                            break;
+                        }
+                    }
+                } => {
+                    set_state(&state, receiver_id, ReceiverState::Probing);
                     true
                 }
             };

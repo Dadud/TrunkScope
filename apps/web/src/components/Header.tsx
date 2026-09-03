@@ -77,6 +77,13 @@ export function Header({
           <span>{linkLabel}</span>
         </div>
 
+        {runtime?.decoderConfigPending && (
+          <div className="status-pill pending" title="Saved settings have not reached the running capture yet">
+            <i />
+            <span>PENDING APPLY</span>
+          </div>
+        )}
+
         {runtime?.aiWorkerStatus && runtime.aiWorkerStatus !== "disabled" && (
           <div className="ai-status-pill" title={`AI Status: ${runtime.aiWorkerStatus}`}>
             <span className="ai-icon">✦</span>

@@ -2,7 +2,7 @@ import type { CallEvent, Receiver, Snapshot } from "./types";
 
 export type AuthStatus = { enabled: boolean; setupRequired?: boolean; localOnly?: boolean };
 export type Session = { username: string; role: string };
-export type RuntimeStatus = { decoderConnected: boolean; decoderLastEvent?: string; receiverCount: number; activeCallCount: number; receiverStates?: string[]; aiEnabled?: boolean; aiWorkerStatus?: string; storagePath?: string; activeScanList?: string; storageHealthy?: boolean; queueBacklog?: number; lastEvent?: string; persistenceConnected?: boolean };
+export type RuntimeStatus = { decoderConnected: boolean; decoderLastEvent?: string; receiverCount: number; activeCallCount: number; receiverStates?: string[]; aiEnabled?: boolean; aiWorkerStatus?: string; storagePath?: string; activeScanList?: string; storageHealthy?: boolean; queueBacklog?: number; lastEvent?: string; persistenceConnected?: boolean; decoderConfigPending?: boolean };
 export type Diagnostics = { capture: { state: string; detail: string }; decoder: { state: string; detail: string }; recording: { state: string; detail: string }; ingestion: { state: string; detail: string }; ai: { state: string; detail: string }; simulated: boolean; lastEvent?: string; lastAudioFile?: string; failureReason?: string; aiFailureReason?: string; imageVersion?: string; decoderControlLockAgeSeconds?: number; decoderHeartbeatAgeSeconds?: number; processId?: number; configHash?: string };
 export async function getDiagnostics(): Promise<Diagnostics> { const response = await fetch("/api/v1/diagnostics"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<Diagnostics>; }
 export type DiscordKeywordRule = { id: string; keyword: string; webhookUrl?: string; enabled?: boolean };
@@ -315,6 +315,10 @@ export async function getDecoderConfig(): Promise<unknown> {
   const response = await fetch("/api/v1/decoder/config");
   if (!response.ok) throw new Error(`API returned ${response.status}`);
   return response.json();
+}
+export async function applyDecoderConfig(): Promise<void> {
+  const response = await fetch("/api/v1/decoder/apply", { method: "POST", credentials: "include" });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `Apply failed (${response.status})`);
 }
 
 export async function updateCallLocation(callId: string, location: { label: string; latitude: number; longitude: number; confidence: number }): Promise<void> {
