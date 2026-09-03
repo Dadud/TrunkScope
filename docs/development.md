@@ -1,6 +1,10 @@
 # Development
 
-Local development workflow for TrunkScope contributors.
+Local development workflow for TrunkScope contributors and coding agents.
+
+## Agent onboarding
+
+If you are an **OpenCode**, **Cursor**, or other coding agent, start at [CONTRIBUTING.md](../CONTRIBUTING.md) and [ai-contributing.md](ai-contributing.md) before editing. Human developers can skip straight to prerequisites below.
 
 ## Prerequisites
 
@@ -20,7 +24,44 @@ crates/domain/        Shared types
 native/radiod/        SDR daemon (Linux)
 deploy/appliance.yml  Supported deploy file for integration testing
 deploy/compose.yml    Deferred multi-service stack (dev reference only)
+deploy/vllm-asr/      Optional Windows/WSL2 vLLM stack for Qwen3-ASR transcription
 ```
+
+## Conventions agents must know
+
+### Supported vs deferred paths
+
+| Path | Status |
+|------|--------|
+| `deploy/appliance.yml` | **Supported** operator install |
+| `deploy/compose.yml` | Deferred dev reference only |
+| `deploy/vllm-asr/` | Optional external transcription host |
+
+### React (apps/web)
+
+- **Hooks order:** never `return` early before all `useState` / `useEffect` calls in a component. Early return after hooks is fine (see `ApplianceDrawer.tsx`).
+- **Frequencies:** use `MhzField` + `mhzToHz` / `hzToMhz` in `format.ts` — UI shows MHz, API stores Hz.
+- **New entity IDs:** use nil UUID `00000000-0000-0000-0000-000000000000`, not `""`. Empty strings break UUID deserialization (HTTP 422).
+- **API client:** add helpers in `apps/web/src/api.ts`; normalize payloads before POST when IDs or optional fields need cleanup.
+
+### Rust (control-plane)
+
+- Shared settings/types: `apps/control-plane/src/state.rs` and `crates/domain/`.
+- Register new routes in `router()` inside `api.rs`; add `#[cfg(test)]` coverage when behavior is non-trivial.
+- Regenerate decoder config when receivers or systems change (`write_decoder_config`).
+
+### AI integrations
+
+- Models are **discovered** from configured endpoints (`providers.rs`, `integrationModels.ts`).
+- Do not reintroduce manual ASR profile dropdowns.
+- Appliance containers must use **LAN IPs** for AI URLs, not `localhost`.
+- GPU transcription on Windows Docker Desktop requires **WSL 2** backend, not Docker VMM — see `deploy/vllm-asr/README.md`.
+
+### Files to avoid committing
+
+- `.env` (any path) — use `.env.example` templates
+- `hardware-acceptance.json` unless from a real hardware acceptance run
+- Secrets, operator passwords, or live tokens from chat
 
 ## Build and test
 
@@ -98,20 +139,40 @@ cargo build -p trunkscope-radiod
 | `sqlite.rs` | Call history database |
 | `retention.rs` | Scheduled retention enforcement |
 | `imports.rs` | RadioReference CSV parsers |
+| `receiver_presets.rs` | SDR driver defaults and capabilities |
 
-## Adding API routes
+## Common change patterns
+
+### Add an API endpoint
 
 1. Handler in `apps/control-plane/src/api.rs`
 2. Register in `router()`
 3. Client helper in `apps/web/src/api.ts`
-4. UI in `ApplianceDrawer` or relevant component
+4. UI in `ApplianceDrawer.tsx` or relevant component
 5. Test in `api.rs` `#[cfg(test)]` module
+
+### Add a system / FM channel
+
+- Protocol `analog-fm` requires `frequencyHz`, `bandwidthHz` (6250 | 12500 | 25000), and `modulation`.
+- PL tone optional; blank means carrier squelch. CTCSS/DCS validated server-side.
+- Assign `receiverId` when multiple SDRs are configured.
+
+### Add integration UI
+
+- Use `IntegrationModelField.tsx` with `discoverTranscribeModels` / `discoverSummaryModels`.
+- POST discovery overrides so models can be listed before settings are saved.
 
 ## Documentation
 
 Operator docs live in `docs/`. Update them when changing install paths, env vars, or provider behavior. The index is [docs/README.md](README.md).
 
-Agent context for automation: [AGENTS.md](../AGENTS.md) (not a substitute for reading the code).
+Agent context for automation:
+
+- [AGENTS.md](../AGENTS.md) — architecture and live deployment facts
+- [ai-contributing.md](ai-contributing.md) — git and verification rules
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — entry index for humans and agents
+
+These are not a substitute for reading the code.
 
 ## CI-equivalent check (pre-push)
 

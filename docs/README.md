@@ -15,6 +15,7 @@ TrunkScope is a self-hosted, receive-only SDR scanner appliance. One Docker cont
 | [DMR ingest](dmr-ingest.md) | Operators | External SDRTrunk / rdio-scanner upload path |
 | [Architecture](architecture.md) | Developers | Components, data flow, persistence model |
 | [Development](development.md) | Developers | Build, test, local workflow |
+| [AI contributing](ai-contributing.md) | AI agents | Commit/push rules, verification, OpenCode handoff |
 | [RF acceptance](rf-acceptance.md) | Integrators | Physical test procedure for FM/P25 gates |
 | [Troubleshooting](troubleshooting.md) | Everyone | Docker, SDR, decoder, AI connectivity |
 | [Completion ledger](completion-status.md) | Maintainers | Evidence-based integration status |

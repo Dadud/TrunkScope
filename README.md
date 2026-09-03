@@ -30,6 +30,8 @@ AI is **never bundled** in the image. Configure transcription, summary, and geoc
 | Topic | Link |
 |-------|------|
 | **All docs (index)** | [docs/README.md](docs/README.md) |
+| **Contributing (humans + agents)** | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| **Agent handoff** | [AGENTS.md](AGENTS.md) |
 | Installation & Unraid | [docs/installation.md](docs/installation.md) |
 | Settings & environment | [docs/configuration.md](docs/configuration.md) |
 | AI provider setup | [docs/ai-providers.md](docs/ai-providers.md) |
@@ -50,7 +52,7 @@ cargo test --workspace
 pnpm install && pnpm --filter @trunkscope/web test && pnpm --filter @trunkscope/web build
 ```
 
-Details: [docs/development.md](docs/development.md)
+Details: [docs/development.md](docs/development.md) · Agents: [CONTRIBUTING.md](CONTRIBUTING.md) · [AGENTS.md](AGENTS.md)
 
 ## Deferred: multi-service Compose
 

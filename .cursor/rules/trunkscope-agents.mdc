@@ -1,0 +1,17 @@
+---
+description: TrunkScope agent onboarding and change discipline
+alwaysApply: true
+---
+
+# TrunkScope agents
+
+Read before editing: `AGENTS.md`, `docs/ai-contributing.md`, `docs/development.md`.
+
+- Supported install: single-container `deploy/appliance.yml` only; `deploy/compose.yml` is deferred.
+- Commit/push only when the user explicitly asks. Never commit secrets or `.env`.
+- Verify: `cargo test --workspace`, `pnpm --filter @trunkscope/web lint test build`.
+- UI controls must change runtime behavior or be removed — no dead ends.
+- React: never place `return` before hooks in a component (causes error #310).
+- New API/system IDs: use nil UUID `00000000-0000-0000-0000-000000000000`, not empty string.
+- AI models are discovered from configured endpoints — do not add static ASR profile pickers.
+- LAN IPs in AI URLs for appliance installs, not `localhost`.

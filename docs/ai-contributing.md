@@ -123,6 +123,16 @@ When taking over a session:
 4. If deploying to Unraid (`192.168.1.4:18088`), distinguish simulated vs hardware evidence
 5. Do not store operator passwords or tokens in the repo
 
+## Common failure modes
+
+| Symptom | Likely cause |
+|---------|----------------|
+| React error #310 | Hook called after conditional `return` in a component |
+| API 422 on system save | Empty `id: ""` or invalid UUID in JSON body |
+| API 400 on analog save | Bad bandwidth (must be 6250/12500/25000 Hz), missing modulation, invalid PL tone |
+| Transcription timeout from appliance | AI URL uses `localhost` instead of LAN IP, or vLLM host unreachable |
+| GPU container fails on Windows | Docker Desktop on Docker VMM — switch to WSL 2 for CUDA |
+
 ## Pull requests
 
 If the user asks for a PR instead of a direct push:
