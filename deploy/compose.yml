@@ -1,5 +1,9 @@
 name: trunkscope
 
+# DEFERRED: Multi-service development reference only.
+# The supported operator install path is deploy/appliance.yml (single container).
+# Do not use this stack for production appliance installs.
+
 services:
   postgres:
     image: postgres:17-alpine

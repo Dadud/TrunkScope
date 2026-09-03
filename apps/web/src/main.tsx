@@ -1,7 +1,6 @@
 import { Component, StrictMode, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
-import { OperatorOverlay } from "./OperatorOverlay";
 import "./styles.css";
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
@@ -14,6 +13,6 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error?: Erro
   }
 }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><App /><OperatorOverlay /></AppErrorBoundary></StrictMode>);
+createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><App /></AppErrorBoundary></StrictMode>);
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) navigator.serviceWorker.register("/sw.js");

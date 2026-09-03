@@ -5,7 +5,9 @@ export type Session = { username: string; role: string };
 export type RuntimeStatus = { decoderConnected: boolean; decoderLastEvent?: string; receiverCount: number; activeCallCount: number; receiverStates?: string[]; aiEnabled?: boolean; aiWorkerStatus?: string; storagePath?: string; activeScanList?: string; storageHealthy?: boolean; queueBacklog?: number; lastEvent?: string; persistenceConnected?: boolean };
 export type Diagnostics = { capture: { state: string; detail: string }; decoder: { state: string; detail: string }; recording: { state: string; detail: string }; ingestion: { state: string; detail: string }; ai: { state: string; detail: string }; simulated: boolean; lastEvent?: string; lastAudioFile?: string; failureReason?: string; aiFailureReason?: string; imageVersion?: string; decoderControlLockAgeSeconds?: number };
 export async function getDiagnostics(): Promise<Diagnostics> { const response = await fetch("/api/v1/diagnostics"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<Diagnostics>; }
-export type AppSettings = { schemaVersion?: number; homeLabel: string; homeLatitude: number; homeLongitude: number; radioMode: string; radioDevice: string; radioFrequencyHz: number; radioSampleRateHz: number; radioBandwidthHz?: number; radioGainDb?: number; radioAgc: boolean; radioPpm: number; aiEnabled: boolean; aiProfile: string; transcribeUrl: string; transcribeModel: string; vadEnabled: boolean; summaryModel: string; summaryRefreshMinutes?: number; publicFeedEnabled: boolean; publicAllowedTalkgroups?: string[]; publicFeedDelaySeconds: number; exposeTranscripts: boolean; exposeRadioIds: boolean; exposePreciseLocations: boolean; audioRetentionDays?: number; transcriptRetentionDays?: number; metadataRetentionDays?: number };
+export type DiscordKeywordRule = { id: string; keyword: string; webhookUrl?: string; enabled?: boolean };
+export type DiscordTalkgroupRule = { id: string; talkgroupId: number; webhookUrl?: string; enabled?: boolean };
+export type AppSettings = { schemaVersion?: number; homeLabel: string; homeLatitude: number; homeLongitude: number; radioMode: string; radioDevice: string; radioFrequencyHz: number; radioSampleRateHz: number; radioBandwidthHz?: number; radioGainDb?: number; radioAgc: boolean; radioPpm: number; aiEnabled: boolean; aiProfile: string; transcribeUrl: string; transcribeProvider?: string; transcribeApiKey?: string; transcribeModel: string; vadEnabled: boolean; summaryModel: string; summaryProvider?: string; summaryApiKey?: string; summaryUrl?: string; summaryRefreshMinutes?: number; geocoderUrl?: string; geocoderProvider?: string; geocoderApiKey?: string; discordWebhookUrl?: string; discordKeywordRules?: DiscordKeywordRule[]; discordTalkgroupRules?: DiscordTalkgroupRule[]; siteFilter?: string; compatIngestEnabled?: boolean; wizardCompleted?: boolean; publicFeedEnabled: boolean; publicAllowedTalkgroups?: string[]; publicFeedDelaySeconds: number; exposeTranscripts: boolean; exposeRadioIds: boolean; exposePreciseLocations: boolean; audioRetentionDays?: number; transcriptRetentionDays?: number; metadataRetentionDays?: number };
 export async function getSettings(): Promise<AppSettings> { const response = await fetch("/api/v1/settings"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<AppSettings>; }
 export async function saveSettings(settings: AppSettings): Promise<AppSettings> { const response = await fetch("/api/v1/settings", { method: "PUT", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(settings) }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : response.status === 400 ? "Check the coordinates and home label" : `API returned ${response.status}`); return response.json() as Promise<AppSettings>; }
 export async function getRuntime(): Promise<RuntimeStatus> { const response = await fetch("/api/v1/runtime"); if (!response.ok) throw new Error(`API returned ${response.status}`); return response.json() as Promise<RuntimeStatus>; }
@@ -38,11 +40,73 @@ export async function saveSystem(profile: Omit<SystemProfile, "id"> & { id?: str
   if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
   return response.json() as Promise<SystemProfile>;
 }
-export async function importTalkgroups(file: File): Promise<{ imported: boolean; rows: number; path: string }> {
-  const response = await fetch("/api/v1/imports/talkgroups", { method: "POST", headers: { "content-type": "text/csv" }, credentials: "include", body: file });
+export async function importTalkgroups(file: File, options?: { systemId?: string; merge?: boolean }): Promise<{ imported: boolean; rows: number; path: string }> {
+  const params = new URLSearchParams();
+  if (options?.systemId) params.set("systemId", options.systemId);
+  if (options?.merge) params.set("merge", "true");
+  const query = params.toString();
+  const response = await fetch(`/api/v1/imports/talkgroups${query ? `?${query}` : ""}`, { method: "POST", headers: { "content-type": "text/csv" }, credentials: "include", body: file });
   if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : response.status === 400 ? "Invalid talkgroup CSV" : `API returned ${response.status}`);
   return response.json() as Promise<{ imported: boolean; rows: number; path: string }>;
 }
+
+export async function importSites(file: File, systemId: string, merge = false): Promise<{ imported: boolean; rows: number }> {
+  const params = new URLSearchParams({ systemId, merge: merge ? "true" : "false" });
+  const response = await fetch(`/api/v1/imports/sites?${params}`, { method: "POST", headers: { "content-type": "text/csv" }, credentials: "include", body: file });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : response.status === 400 ? "Invalid site CSV" : `API returned ${response.status}`);
+  return response.json() as Promise<{ imported: boolean; rows: number }>;
+}
+
+export async function testTranscribeIntegration(): Promise<void> {
+  const response = await fetch("/api/v1/integrations/transcribe/test", { method: "POST", credentials: "include" });
+  if (!response.ok) throw new Error("Transcription provider test failed");
+}
+
+export async function testSummaryIntegration(): Promise<void> {
+  const response = await fetch("/api/v1/integrations/summary/test", { method: "POST", credentials: "include" });
+  if (!response.ok) throw new Error("Summary provider test failed");
+}
+
+export async function testGeocoderIntegration(): Promise<void> {
+  const response = await fetch("/api/v1/integrations/geocoder/test", { method: "POST", credentials: "include" });
+  if (!response.ok) throw new Error("Geocoder test failed");
+}
+
+export const AI_STACK_PRESETS: Record<string, Partial<AppSettings>> = {
+  "local-gpu": {
+    aiEnabled: true,
+    transcribeProvider: "openai-compatible",
+    transcribeUrl: "http://192.168.1.10:8000/v1/audio/transcriptions",
+    transcribeModel: "Qwen/Qwen3-ASR-1.7B",
+    summaryProvider: "ollama",
+    summaryUrl: "http://192.168.1.10:11434/api/generate",
+    summaryModel: "llama3.2:3b",
+    geocoderProvider: "nominatim",
+    geocoderUrl: "https://nominatim.openstreetmap.org/search",
+  },
+  "cloud-hybrid": {
+    aiEnabled: true,
+    transcribeProvider: "groq-whisper",
+    transcribeUrl: "https://api.groq.com/openai/v1/audio/transcriptions",
+    transcribeModel: "whisper-large-v3",
+    summaryProvider: "openai-compatible",
+    summaryUrl: "https://openrouter.ai/api/v1/chat/completions",
+    summaryModel: "meta-llama/llama-3.2-3b-instruct",
+    geocoderProvider: "google",
+    geocoderUrl: "https://maps.googleapis.com/maps/api/geocode/json",
+  },
+  "privacy-max": {
+    aiEnabled: true,
+    transcribeProvider: "openai-compatible",
+    transcribeUrl: "http://192.168.1.10:8000/v1/audio/transcriptions",
+    transcribeModel: "Systran/faster-distil-whisper-small.en",
+    summaryProvider: "ollama",
+    summaryUrl: "http://192.168.1.10:11434/api/generate",
+    summaryModel: "llama3.2:3b",
+    geocoderProvider: "nominatim",
+    geocoderUrl: "",
+  },
+};
 
 export async function getSnapshot(signal?: AbortSignal): Promise<Snapshot> {
   const response = await fetch("/api/v1/snapshot", { signal });
@@ -89,4 +153,117 @@ export function subscribeToCalls(
     try { onEvent(JSON.parse(message.data as string) as CallEvent); } catch { /* ignore malformed events */ }
   };
   return () => socket.close();
+}
+
+export type Talkgroup = { id: string; systemId: string; decimalId: number; alphaTag: string; description: string; category: string; priority?: number; enabled?: boolean; record?: boolean; publicAllowed?: boolean };
+export type AuditEntry = { action: string; resourceType: string; resourceId: string; occurredAt: string };
+export type PublicationPolicy = { enabled: boolean; delaySeconds: number; allowedTalkgroups: string[]; exposeTranscripts: boolean; exposeRadioIds: boolean; exposePreciseLocations: boolean };
+
+export async function getTalkgroups(): Promise<Talkgroup[]> {
+  const response = await fetch("/api/v1/talkgroups");
+  if (!response.ok) throw new Error(`API returned ${response.status}`);
+  return response.json() as Promise<Talkgroup[]>;
+}
+
+export async function saveTalkgroup(talkgroup: Talkgroup): Promise<Talkgroup> {
+  const response = await fetch("/api/v1/talkgroups", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(talkgroup) });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+  return response.json() as Promise<Talkgroup>;
+}
+
+export async function updateTalkgroup(id: string, talkgroup: Talkgroup): Promise<Talkgroup> {
+  const response = await fetch(`/api/v1/talkgroups/${encodeURIComponent(id)}`, { method: "PUT", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(talkgroup) });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+  return response.json() as Promise<Talkgroup>;
+}
+
+export async function deleteTalkgroup(id: string): Promise<void> {
+  const response = await fetch(`/api/v1/talkgroups/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+}
+
+export async function deleteSystem(id: string): Promise<void> {
+  const response = await fetch(`/api/v1/systems/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+}
+
+export async function startScanList(id: string): Promise<void> {
+  const response = await fetch(`/api/v1/scan-lists/${encodeURIComponent(id)}/start`, { method: "POST", credentials: "include" });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+}
+
+export async function stopScanList(id: string): Promise<void> {
+  const response = await fetch(`/api/v1/scan-lists/${encodeURIComponent(id)}/stop`, { method: "POST", credentials: "include" });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+}
+
+export async function deleteScanList(id: string): Promise<void> {
+  const response = await fetch(`/api/v1/scan-lists/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+}
+
+export async function previewSystemsImport(file: File): Promise<{ rows: number; preview: SystemProfile[] }> {
+  const response = await fetch("/api/v1/imports/systems/preview", { method: "POST", headers: { "content-type": "text/csv" }, credentials: "include", body: file });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+  return response.json() as Promise<{ rows: number; preview: SystemProfile[] }>;
+}
+
+export async function importSystems(file: File): Promise<{ imported: boolean; rows: number }> {
+  const response = await fetch("/api/v1/imports/systems", { method: "POST", headers: { "content-type": "text/csv" }, credentials: "include", body: file });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+  return response.json() as Promise<{ imported: boolean; rows: number }>;
+}
+
+export async function getAuditLog(): Promise<AuditEntry[]> {
+  const response = await fetch("/api/v1/audit", { credentials: "include" });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+  return response.json() as Promise<AuditEntry[]>;
+}
+
+export async function getDecoderConfig(): Promise<unknown> {
+  const response = await fetch("/api/v1/decoder/config");
+  if (!response.ok) throw new Error(`API returned ${response.status}`);
+  return response.json();
+}
+
+export async function updateCallLocation(callId: string, location: { label: string; latitude: number; longitude: number; confidence: number }): Promise<void> {
+  const response = await fetch(`/api/v1/calls/${encodeURIComponent(callId)}/location`, { method: "PUT", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(location) });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+}
+
+export async function purgeCalls(filters: { hours?: number; category?: string; talkgroupId?: number; systemId?: string }): Promise<{ removed: number }> {
+  const response = await fetch("/api/v1/calls/purge", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(filters) });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+  return response.json() as Promise<{ removed: number }>;
+}
+
+export async function undoPurgeCalls(): Promise<{ removed: number }> {
+  const response = await fetch("/api/v1/calls/purge/undo", { method: "POST", credentials: "include" });
+  if (!response.ok) throw new Error(response.status === 404 ? "Nothing to undo" : response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+  return response.json() as Promise<{ removed: number }>;
+}
+
+export type OperationsAskResponse = { answer: string; citedCallIds: string[]; status: string };
+
+export async function askOperations(question: string, hours = 4): Promise<OperationsAskResponse> {
+  const response = await fetch("/api/v1/operations/ask", { method: "POST", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify({ question, hours }) });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status}`);
+  return response.json() as Promise<OperationsAskResponse>;
+}
+
+export async function getPublicPolicy(): Promise<PublicationPolicy> {
+  const response = await fetch("/api/v1/public-policy");
+  if (!response.ok) throw new Error(`API returned ${response.status}`);
+  return response.json() as Promise<PublicationPolicy>;
+}
+
+export async function savePublicPolicy(policy: PublicationPolicy): Promise<PublicationPolicy> {
+  const response = await fetch("/api/v1/public-policy", { method: "PUT", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(policy) });
+  if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : response.status === 400 ? "Enable requires at least one allowed talkgroup" : `API returned ${response.status}`);
+  return response.json() as Promise<PublicationPolicy>;
+}
+
+export async function testDiscordWebhook(): Promise<void> {
+  const response = await fetch("/api/v1/integrations/discord/test", { method: "POST", credentials: "include" });
+  if (!response.ok) throw new Error(response.status === 501 ? "Discord webhook is not configured" : response.status === 401 ? "Administrator login required" : "Discord test failed");
 }

@@ -13,8 +13,10 @@ interface MapConsoleProps {
   selectedCall?: Call;
   volume: number;
   homeCenter: [number, number];
+  isAdmin?: boolean;
   onSelectCall: (call: Call) => void;
   onOpenTalkgroup: (talkgroupId: number) => void;
+  onCallUpdated?: (call: Call) => void;
 }
 
 const mapStyles: Record<MapStyleMode, { url: string; attribution: string }> = {
@@ -37,13 +39,16 @@ export function MapConsole({
   selectedCall,
   volume,
   homeCenter,
+  isAdmin,
   onSelectCall,
   onOpenTalkgroup,
+  onCallUpdated,
 }: MapConsoleProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const popupRef = useRef<MapLibrePopup | null>(null);
   const [styleMode, setStyleMode] = useState<MapStyleMode>("dark");
+  const [heatmapEnabled, setHeatmapEnabled] = useState(false);
 
   const buildGeoJson = useCallback((): FeatureCollection<Point> => {
     const locatedCalls = calls.filter((c) => Boolean(c.location));
@@ -104,13 +109,15 @@ export function MapConsole({
       <CallPopup
         call={call}
         volume={volume}
+        isAdmin={isAdmin}
+        onLocationUpdated={onCallUpdated}
         onOpenTalkgroup={onOpenTalkgroup}
         onClose={() => popup.remove()}
       />
     );
 
     popupRef.current = popup;
-  }, [volume, onOpenTalkgroup]);
+  }, [volume, onOpenTalkgroup, isAdmin, onCallUpdated]);
 
   // Initialize Map
   useEffect(() => {
@@ -152,6 +159,23 @@ export function MapConsole({
         cluster: true,
         clusterMaxZoom: 13,
         clusterRadius: 50,
+      });
+
+      // Incident heatmap (toggleable)
+      map.addLayer({
+        id: "incident-heatmap",
+        type: "heatmap",
+        source: "incidents",
+        filter: ["!", ["has", "point_count"]],
+        paint: {
+          "heatmap-weight": 1,
+          "heatmap-intensity": 0.9,
+          "heatmap-radius": 28,
+          "heatmap-opacity": 0.65,
+        },
+        layout: {
+          visibility: "none",
+        },
       });
 
       // Cluster circle layer
@@ -280,6 +304,14 @@ export function MapConsole({
     }
   }, [calls, buildGeoJson]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    if (map.getLayer("incident-heatmap")) {
+      map.setLayoutProperty("incident-heatmap", "visibility", heatmapEnabled ? "visible" : "none");
+    }
+  }, [heatmapEnabled]);
+
   // Fly to selected call if it has a location
   useEffect(() => {
     const map = mapRef.current;
@@ -367,6 +399,15 @@ export function MapConsole({
             DAY
           </button>
         </div>
+
+        <button
+          type="button"
+          className={heatmapEnabled ? "active" : ""}
+          onClick={() => setHeatmapEnabled((value) => !value)}
+          title="Toggle incident heatmap"
+        >
+          HEAT
+        </button>
 
         <button
           type="button"

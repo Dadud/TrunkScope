@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getOperationsSummary, type OperationsSummary as SummaryData } from "../api";
+import { askOperations, getOperationsSummary, type OperationsSummary as SummaryData } from "../api";
 
 interface OperationsDrawerProps {
   isOpen: boolean;
@@ -12,6 +12,11 @@ export function OperationsDrawer({ isOpen, onClose, refreshMinutes = 15 }: Opera
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [drawerTab, setDrawerTab] = useState<"brief" | "ask">("brief");
+  const [question, setQuestion] = useState("");
+  const [askAnswer, setAskAnswer] = useState("");
+  const [askStatus, setAskStatus] = useState("");
+  const [askLoading, setAskLoading] = useState(false);
 
   const fetchSummary = async (h: number) => {
     setLoading(true);
@@ -48,6 +53,13 @@ export function OperationsDrawer({ isOpen, onClose, refreshMinutes = 15 }: Opera
           </button>
         </div>
 
+        <div className="ops-time-tabs">
+          <button type="button" className={`time-tab ${drawerTab === "brief" ? "active" : ""}`} onClick={() => setDrawerTab("brief")}>BRIEF</button>
+          <button type="button" className={`time-tab ${drawerTab === "ask" ? "active" : ""}`} onClick={() => setDrawerTab("ask")}>ASK AI</button>
+        </div>
+
+        {drawerTab === "brief" && (
+        <>
         <div className="ops-time-tabs">
           {[1, 4, 12, 24].map((h) => (
             <button
@@ -144,6 +156,52 @@ export function OperationsDrawer({ isOpen, onClose, refreshMinutes = 15 }: Opera
                 ))}
               </div>
             </div>
+          </div>
+        )}
+        </>
+        )}
+
+        {drawerTab === "ask" && (
+          <div className="ops-ask-panel">
+            <p className="pane-desc">Ask a natural-language question about recent radio traffic.</p>
+            <textarea
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="What fire or EMS activity happened near Pittsville in the last few hours?"
+              rows={4}
+            />
+            <div className="btn-row">
+              <button
+                type="button"
+                className="primary-btn"
+                disabled={askLoading || !question.trim()}
+                onClick={async () => {
+                  setAskLoading(true);
+                  setAskStatus("");
+                  try {
+                    const response = await askOperations(question, hours);
+                    setAskAnswer(response.answer);
+                    setAskStatus(response.status);
+                  } catch (err) {
+                    setAskAnswer(err instanceof Error ? err.message : "Ask failed");
+                    setAskStatus("error");
+                  } finally {
+                    setAskLoading(false);
+                  }
+                }}
+              >
+                {askLoading ? "Thinking…" : "Ask"}
+              </button>
+            </div>
+            {askAnswer && (
+              <div className="ops-ai-card">
+                <div className="ai-card-title">
+                  <strong>Answer</strong>
+                  {askStatus && <span className={`ai-badge ${askStatus}`}>{askStatus.toUpperCase()}</span>}
+                </div>
+                <p className="ai-narrative-text">{askAnswer}</p>
+              </div>
+            )}
           </div>
         )}
       </aside>

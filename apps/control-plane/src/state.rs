@@ -46,6 +46,8 @@ pub struct SystemSite {
     pub control_channels_hz: Vec<u64>,
     #[serde(default)]
     pub voice_channels_hz: Vec<u64>,
+    #[serde(default)]
+    pub nac: Option<u32>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
 }
@@ -96,6 +98,32 @@ pub enum ReceiverCommand {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DiscordTalkgroupRule {
+    pub id: uuid::Uuid,
+    pub talkgroup_id: u32,
+    #[serde(default)]
+    pub webhook_url: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordKeywordRule {
+    pub id: uuid::Uuid,
+    pub keyword: String,
+    #[serde(default)]
+    pub webhook_url: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub struct AppSettings {
     pub schema_version: u32,
@@ -116,10 +144,34 @@ pub struct AppSettings {
     /// actual model/endpoint values below.
     pub ai_profile: String,
     pub transcribe_url: String,
+    #[serde(default = "default_transcribe_provider")]
+    pub transcribe_provider: String,
+    #[serde(default)]
+    pub transcribe_api_key: String,
     pub transcribe_model: String,
     pub vad_enabled: bool,
     pub summary_model: String,
+    #[serde(default = "default_summary_provider")]
+    pub summary_provider: String,
+    #[serde(default)]
+    pub summary_api_key: String,
+    pub summary_url: String,
     pub summary_refresh_minutes: u32,
+    pub geocoder_url: String,
+    #[serde(default = "default_geocoder_provider")]
+    pub geocoder_provider: String,
+    #[serde(default)]
+    pub geocoder_api_key: String,
+    pub discord_webhook_url: String,
+    #[serde(default)]
+    pub discord_keyword_rules: Vec<DiscordKeywordRule>,
+    #[serde(default)]
+    pub discord_talkgroup_rules: Vec<DiscordTalkgroupRule>,
+    pub site_filter: String,
+    #[serde(default)]
+    pub compat_ingest_enabled: bool,
+    #[serde(default)]
+    pub wizard_completed: bool,
     pub public_feed_enabled: bool,
     pub public_allowed_talkgroups: Vec<uuid::Uuid>,
     pub public_feed_delay_seconds: u32,
@@ -131,10 +183,68 @@ pub struct AppSettings {
     pub metadata_retention_days: u32,
 }
 
+fn default_geocoder_provider() -> String {
+    "nominatim".into()
+}
+
+fn default_transcribe_provider() -> String {
+    "openai-compatible".into()
+}
+
+fn default_summary_provider() -> String {
+    "ollama".into()
+}
+
+impl AppSettings {
+    pub fn effective_summary_url(&self) -> Option<String> {
+        let value = self.summary_url.trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+        std::env::var("TRUNKSCOPE_SUMMARY_URL")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+
+    pub fn effective_geocoder_url(&self) -> Option<String> {
+        let value = self.geocoder_url.trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+        std::env::var("TRUNKSCOPE_GEOCODER_URL")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+
+    pub fn effective_discord_webhook_url(&self) -> Option<String> {
+        let value = self.discord_webhook_url.trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+        std::env::var("TRUNKSCOPE_DISCORD_WEBHOOK_URL")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+
+    pub fn effective_site_filter(&self) -> Option<String> {
+        let value = self.site_filter.trim();
+        if !value.is_empty() {
+            return Some(value.to_ascii_lowercase());
+        }
+        std::env::var("TRUNKSCOPE_SITE_FILTER")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| !v.is_empty())
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            schema_version: 3,
+            schema_version: 5,
             home_label: "Home".into(),
             home_latitude: 44.3984,
             home_longitude: -90.5785,
@@ -173,6 +283,8 @@ impl Default for AppSettings {
                 .unwrap_or_else(|_| "cpu-faster-whisper-small".into()),
             transcribe_url: std::env::var("TRUNKSCOPE_TRANSCRIBE_URL")
                 .unwrap_or_else(|_| "http://speaches:8000/v1/audio/transcriptions".into()),
+            transcribe_provider: default_transcribe_provider(),
+            transcribe_api_key: std::env::var("TRUNKSCOPE_TRANSCRIBE_API_KEY").unwrap_or_default(),
             transcribe_model: std::env::var("TRUNKSCOPE_TRANSCRIBE_MODEL")
                 .unwrap_or_else(|_| "Systran/faster-distil-whisper-small.en".into()),
             vad_enabled: std::env::var("TRUNKSCOPE_VAD_ENABLED")
@@ -181,7 +293,20 @@ impl Default for AppSettings {
                 .unwrap_or(true),
             summary_model: std::env::var("TRUNKSCOPE_SUMMARY_MODEL")
                 .unwrap_or_else(|_| "llama3.2:3b".into()),
+            summary_provider: default_summary_provider(),
+            summary_api_key: std::env::var("TRUNKSCOPE_SUMMARY_API_KEY").unwrap_or_default(),
+            summary_url: std::env::var("TRUNKSCOPE_SUMMARY_URL").unwrap_or_default(),
             summary_refresh_minutes: 15,
+            geocoder_url: std::env::var("TRUNKSCOPE_GEOCODER_URL").unwrap_or_default(),
+            geocoder_provider: default_geocoder_provider(),
+            geocoder_api_key: std::env::var("TRUNKSCOPE_GEOCODER_API_KEY").unwrap_or_default(),
+            discord_webhook_url: std::env::var("TRUNKSCOPE_DISCORD_WEBHOOK_URL")
+                .unwrap_or_default(),
+            discord_keyword_rules: Vec::new(),
+            discord_talkgroup_rules: Vec::new(),
+            site_filter: std::env::var("TRUNKSCOPE_SITE_FILTER").unwrap_or_default(),
+            compat_ingest_enabled: false,
+            wizard_completed: false,
             public_feed_enabled: false,
             public_allowed_talkgroups: Vec::new(),
             public_feed_delay_seconds: 120,
@@ -244,6 +369,8 @@ pub struct AppState {
     pub ai_worker_status: RwLock<String>,
     pub ai_last_error: RwLock<Option<String>>,
     pub persistence: RwLock<Option<crate::persistence::Sender>>,
+    /// Recently purged calls kept for operator undo (bounded, in-memory).
+    pub purge_undo: RwLock<Option<Vec<trunkscope_domain::Call>>>,
 }
 
 impl AppState {
@@ -395,6 +522,39 @@ impl AppState {
             }
             settings_changed = true;
         }
+        if settings.schema_version < 4 {
+            settings.schema_version = 4;
+            if settings.summary_url.is_empty() {
+                settings.summary_url =
+                    std::env::var("TRUNKSCOPE_SUMMARY_URL").unwrap_or_default();
+            }
+            if settings.geocoder_url.is_empty() {
+                settings.geocoder_url =
+                    std::env::var("TRUNKSCOPE_GEOCODER_URL").unwrap_or_default();
+            }
+            if settings.discord_webhook_url.is_empty() {
+                settings.discord_webhook_url =
+                    std::env::var("TRUNKSCOPE_DISCORD_WEBHOOK_URL").unwrap_or_default();
+            }
+            if settings.site_filter.is_empty() {
+                settings.site_filter =
+                    std::env::var("TRUNKSCOPE_SITE_FILTER").unwrap_or_default();
+            }
+            if settings.geocoder_provider.is_empty() {
+                settings.geocoder_provider = default_geocoder_provider();
+            }
+            settings_changed = true;
+        }
+        if settings.schema_version < 5 {
+            settings.schema_version = 5;
+            if settings.transcribe_provider.is_empty() {
+                settings.transcribe_provider = default_transcribe_provider();
+            }
+            if settings.summary_provider.is_empty() {
+                settings.summary_provider = default_summary_provider();
+            }
+            settings_changed = true;
+        }
         // SDRplay RSP1B exposes stable manual-gain operation and a broad
         // bandwidth range. Make the conservative first-run values explicit so
         // the UI/runtime do not display nulls while silently applying a
@@ -463,6 +623,7 @@ impl AppState {
             ai_worker_status: RwLock::new("disabled".into()),
             ai_last_error: RwLock::new(None),
             persistence: RwLock::new(None),
+            purge_undo: RwLock::new(None),
         }
     }
 
@@ -510,8 +671,9 @@ impl AppState {
             .expect("persistence lock poisoned")
             .as_ref()
         {
-            let _ = sender.send(crate::persistence::Command::Call(persisted));
+            let _ = sender.send(crate::persistence::Command::Call(persisted.clone()));
         }
+        crate::sqlite::upsert_call(&persisted);
         let _ = self.events.send(event);
     }
 
@@ -641,6 +803,7 @@ impl AppState {
             {
                 let _ = sender.send(crate::persistence::Command::Call(call.clone()));
             }
+            crate::sqlite::upsert_call(&call);
             let _ = self.events.send(CallEvent::Updated(call));
         }
     }
@@ -680,6 +843,7 @@ impl AppState {
             {
                 let _ = sender.send(crate::persistence::Command::Call(call.clone()));
             }
+            crate::sqlite::upsert_call(&call);
             let _ = self.events.send(CallEvent::Updated(call));
         }
     }

@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import type { Call } from "../types";
 import { formatElapsed, formatFrequency } from "../format";
-import { callAudioUrl } from "../api";
+import { callAudioUrl, purgeCalls, undoPurgeCalls } from "../api";
 
 interface ArchiveDrawerProps {
   isOpen: boolean;
@@ -14,6 +14,9 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [purgeHours, setPurgeHours] = useState(24);
+  const [purgeMessage, setPurgeMessage] = useState("");
+  const [undoAvailable, setUndoAvailable] = useState(false);
 
   const categories = useMemo(() => {
     return Array.from(new Set(calls.map((c) => c.category))).sort();
@@ -67,6 +70,53 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
 
         <div className="archive-results-info">
           <span>{filteredCalls.length} recorded calls found</span>
+        </div>
+
+        <div className="archive-purge-panel">
+          <h4>Admin purge</h4>
+          <label>
+            Remove calls from last
+            <input type="number" min={1} max={168} value={purgeHours} onChange={(e) => setPurgeHours(Number(e.target.value))} />
+            hours
+          </label>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="danger-btn"
+              onClick={async () => {
+                if (!window.confirm(`Remove calls from the last ${purgeHours} hours?`)) return;
+                try {
+                  const result = await purgeCalls({
+                    hours: purgeHours,
+                    category: selectedCategory === "all" ? undefined : selectedCategory,
+                  });
+                  setPurgeMessage(`Removed ${result.removed} calls`);
+                  setUndoAvailable(result.removed > 0);
+                } catch (error) {
+                  setPurgeMessage(error instanceof Error ? error.message : "Purge failed");
+                }
+              }}
+            >
+              Purge matching calls
+            </button>
+            {undoAvailable && (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const result = await undoPurgeCalls();
+                    setPurgeMessage(`Restored ${result.removed} calls`);
+                    setUndoAvailable(false);
+                  } catch (error) {
+                    setPurgeMessage(error instanceof Error ? error.message : "Undo failed");
+                  }
+                }}
+              >
+                Undo purge
+              </button>
+            )}
+          </div>
+          {purgeMessage && <span>{purgeMessage}</span>}
         </div>
 
         <div className="archive-scroll-list">

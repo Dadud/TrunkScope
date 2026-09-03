@@ -81,7 +81,8 @@ Supported targets:
 ### Deployment and authentication
 
 - Docker Compose is the full multi-service reference stack.
-- The single-container appliance (`Dockerfile`, Unraid `trunkscope.xml`) is the USB-passthrough install path: one volume, one published port, Trunk Recorder + control plane + web UI.
+- The single-container appliance (`Dockerfile`, Unraid `trunkscope.xml`) is the **only supported operator install path**: one volume, one published port, Trunk Recorder + control plane + web UI + SQLite persistence.
+- The full Compose stack (`deploy/compose.yml`) is **deferred** — development reference only.
 - Unraid synchronization/build tooling is in `scripts/unraid-deploy.py`.
 - The deployment script must use `--env-file .env -f deploy/compose.yml` and run from the app root.
 - SDRplay vendor runtime is mounted from the configured Unraid path and USB access is isolated to the vendor service.

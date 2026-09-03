@@ -60,7 +60,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/receivers/{id}/start", post(receiver_start))
         .route("/api/v1/receivers/{id}/stop", post(receiver_stop))
         .route("/api/v1/receivers/{id}/restart", post(receiver_restart))
+        .route("/api/v1/calls/{id}/location", put(update_call_location))
+        .route("/api/v1/calls/purge", post(purge_calls))
+        .route("/api/v1/calls/purge/undo", post(undo_purge_calls))
         .route("/api/v1/calls", get(calls))
+        .route("/api/v1/operations/ask", post(operations_ask))
+        .route("/api/call-upload", post(rdio_call_upload))
         .route("/api/v1/operations/summary", get(operations_summary))
         .route("/api/v1/operations/sessions", get(conversation_sessions))
         .route(
@@ -74,6 +79,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/integrations/discord", get(discord_status))
         .route("/api/v1/integrations/discord/test", post(discord_test))
         .route("/api/v1/integrations/geocoder", get(geocoder_status))
+        .route("/api/v1/integrations/transcribe", get(transcribe_status))
+        .route("/api/v1/integrations/transcribe/test", post(transcribe_test))
+        .route("/api/v1/integrations/summary", get(summary_status))
+        .route("/api/v1/integrations/summary/test", post(summary_test))
+        .route("/api/v1/integrations/geocoder/test", post(geocoder_test))
+        .route("/api/v1/imports/sites", post(import_sites))
+        .route("/api/v1/imports/sites/preview", post(preview_sites))
         .route("/api/v1/audio/{id}", get(audio))
         .route("/api/v1/calls/{id}/audio", get(audio))
         .route(
@@ -271,7 +283,8 @@ async fn runtime(State(state): State<Arc<AppState>>) -> Json<RuntimeResponse> {
             .persistence
             .read()
             .expect("persistence lock poisoned")
-            .is_some(),
+            .is_some()
+            || crate::sqlite::db_path().is_file(),
         ai_worker_status,
         active_call_count: calls
             .iter()
@@ -425,18 +438,19 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         .clone();
     let receivers = state.receivers.read().expect("receiver lock poisoned");
     let systems = state.systems.read().expect("system lock poisoned");
+    let site_filter = settings.effective_site_filter();
     let p25_controls: Vec<u64> = systems
         .iter()
         .filter(|system| system.protocol == "p25")
         .flat_map(|system| {
-            let site_filter = std::env::var("TRUNKSCOPE_SITE_FILTER")
-                .ok()
-                .map(|value| value.trim().to_ascii_lowercase())
-                .filter(|value| !value.is_empty());
             let selected_sites: Vec<_> = system
                 .sites
                 .iter()
-                .filter(|site| site_filter.as_ref().is_none_or(|filter| site.name.to_ascii_lowercase().contains(filter)))
+                .filter(|site| {
+                    site_filter
+                        .as_ref()
+                        .is_none_or(|filter| site.name.to_ascii_lowercase().contains(filter))
+                })
                 .collect();
             let site_channels = selected_sites
                 .iter()
@@ -526,23 +540,27 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         .unwrap_or_else(|_| {
             std::path::PathBuf::from("/var/lib/trunkscope/calls/imported-talkgroups.csv")
         });
-    let talkgroups_file = if imported_talkgroups.is_file() {
+    let default_talkgroups_file = if imported_talkgroups.is_file() {
         "/var/lib/trunkscope/calls/imported-talkgroups.csv"
     } else {
         "/config/trs_tg_6364.csv"
     };
+    let talkgroups = state.talkgroups.read().expect("talkgroup lock poisoned");
+    let calls_root = std::env::var("TRUNKSCOPE_CALLS_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/var/lib/trunkscope/calls"));
     let mut configured_systems: Vec<_> = systems
         .iter()
         .filter(|system| system.protocol == "p25")
         .map(|system| {
-            let site_filter = std::env::var("TRUNKSCOPE_SITE_FILTER")
-                .ok()
-                .map(|value| value.trim().to_ascii_lowercase())
-                .filter(|value| !value.is_empty());
             let selected_sites: Vec<_> = system
                 .sites
                 .iter()
-                .filter(|site| site_filter.as_ref().is_none_or(|filter| site.name.to_ascii_lowercase().contains(filter)))
+                .filter(|site| {
+                    site_filter
+                        .as_ref()
+                        .is_none_or(|filter| site.name.to_ascii_lowercase().contains(filter))
+                })
                 .collect();
             let site_channels = selected_sites
                 .iter()
@@ -555,6 +573,8 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
             } else {
                 system.control_channels_hz.clone()
             };
+            let talkgroups_file =
+                talkgroups_file_for_system(&calls_root, &talkgroups, system.id, default_talkgroups_file);
             let mut configured = serde_json::json!({
                 "type": "p25", "shortName": system.name,
                 "control_channels": control_channels,
@@ -562,15 +582,25 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
                 "modulation": "qpsk", "squelch": -60, "recordUnknown": true, "hideEncrypted": false,
                 "talkgroupsFile": talkgroups_file,
             });
+            if let Some(nac) = system.nac.filter(|value| *value > 0 && *value <= 0xFFF) {
+                configured["nac"] = serde_json::json!(nac);
+            }
             attach_upload_script(&mut configured);
             configured
         })
         .collect();
+    drop(talkgroups);
     if systems.iter().any(|system| system.protocol == "analog-fm") {
+        let conventional_name = systems
+            .iter()
+            .filter(|system| system.protocol == "analog-fm")
+            .map(|system| system.name.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ");
         let mut conventional = serde_json::json!({
             "type": "conventional",
-            "shortName": "Jackson County FM",
-            "channelFile": "/generated/decoder/analog-channels.csv",
+            "shortName": if conventional_name.is_empty() { "Conventional FM" } else { conventional_name.as_str() },
+            "channelFile": "/var/lib/trunkscope/audio/decoder/analog-channels.csv",
             "squelch": -60.0,
             "enabled": true,
             "deemphasisTau": 0.000750,
@@ -587,6 +617,39 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         "audioArchive": true, "callLog": true, "softVocoder": true,
         "sources": [source], "systems": configured_systems,
     })
+}
+
+fn talkgroups_file_for_system(
+    calls_root: &std::path::Path,
+    talkgroups: &[Talkgroup],
+    system_id: uuid::Uuid,
+    fallback: &str,
+) -> String {
+    let scoped: Vec<&Talkgroup> = talkgroups
+        .iter()
+        .filter(|talkgroup| talkgroup.system_id == system_id)
+        .collect();
+    if scoped.is_empty() {
+        return fallback.to_string();
+    }
+    let path = calls_root.join(format!("talkgroups-{}.csv", system_id));
+    let mut csv = String::from("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n");
+    for talkgroup in scoped {
+        csv.push_str(&format!(
+            "{},{:03X},\"{}\",D,\"{}\",\"{}\",\"{}\"\n",
+            talkgroup.decimal_id,
+            talkgroup.decimal_id,
+            talkgroup.alpha_tag.replace('"', "'"),
+            talkgroup.description.replace('"', "'"),
+            talkgroup.category.replace('"', "'"),
+            talkgroup.category.replace('"', "'")
+        ));
+    }
+    if crate::state::atomic_write(&path, csv.as_bytes()).is_ok() {
+        format!("/var/lib/trunkscope/calls/talkgroups-{}.csv", system_id)
+    } else {
+        fallback.to_string()
+    }
 }
 
 fn attach_upload_script(system: &mut serde_json::Value) {
@@ -1232,6 +1295,11 @@ async fn receiver_restart(
     .await
 }
 
+fn optional_http_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    trimmed.is_empty() || trimmed.starts_with("http://") || trimmed.starts_with("https://")
+}
+
 fn admin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     crate::auth::admin_accessible(state, headers)
 }
@@ -1290,13 +1358,12 @@ struct OperationsSummary {
     threads: Vec<IncidentThread>,
 }
 
-#[derive(serde::Deserialize)]
-struct OperationsAiResponse { response: Option<String> }
-
 async fn generate_operations_ai_summary(state: &AppState, hours: u32, threads: &[IncidentThread]) -> (Option<String>, String) {
     let settings = state.settings.read().expect("settings lock poisoned").clone();
     if !settings.ai_enabled { return (None, "disabled".into()); }
-    let Ok(url) = std::env::var("TRUNKSCOPE_SUMMARY_URL") else { return (None, "provider-unconfigured".into()); };
+    if settings.effective_summary_url().is_none() {
+        return (None, "provider-unconfigured".into());
+    }
     let mut context = String::new();
     for thread in threads.iter().take(12) {
         context.push_str(&format!("Site/system: {}; channel plan: {}; calls: {}; severity: {}/5; excerpts: {}\n", thread.system_name, thread.talkgroup_label, thread.call_count, thread.severity, thread.excerpts.join(" | ")));
@@ -1304,12 +1371,9 @@ async fn generate_operations_ai_summary(state: &AppState, hours: u32, threads: &
     }
     if context.is_empty() { return (Some(format!("No radio activity was recorded in the last {hours} hours.")), "generated".into()); }
     let prompt = format!("Write a concise factual radio-operations brief (maximum 120 words) for the last {hours} hours. Group related activity, mention only details supported by the excerpts, call out notable incidents and locations, and say when there is not enough information. Do not invent names, addresses, or outcomes.\n\n{context}");
-    let body = serde_json::json!({"model": settings.summary_model, "prompt": prompt, "stream": false});
-    match reqwest::Client::new().post(url).json(&body).timeout(std::time::Duration::from_secs(60)).send().await {
-        Ok(response) => match response.json::<OperationsAiResponse>().await {
-            Ok(value) if value.response.as_deref().is_some_and(|text| !text.trim().is_empty()) => (value.response.map(|text| text.trim().to_owned()), "generated".into()),
-            _ => (None, "provider-invalid-response".into()),
-        },
+    match crate::providers::summarize(&crate::providers::http_client(), &settings, &context, &prompt).await {
+        Ok(text) if !text.trim().is_empty() => (Some(text), "generated".into()),
+        Ok(_) => (None, "provider-invalid-response".into()),
         Err(_) => (None, "provider-unavailable".into()),
     }
 }
@@ -1547,6 +1611,253 @@ async fn confirm_session_location(
     StatusCode::NO_CONTENT.into_response()
 }
 
+async fn update_call_location(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+    headers: HeaderMap,
+    Json(location): Json<trunkscope_domain::IncidentLocation>,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let exists = state
+        .calls
+        .read()
+        .expect("calls lock poisoned")
+        .iter()
+        .any(|call| call.id == id);
+    if !exists {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    state.set_call_location(id, location);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PurgeCallsRequest {
+    #[serde(default)]
+    hours: Option<u32>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    talkgroup_id: Option<u32>,
+    #[serde(default)]
+    system_id: Option<uuid::Uuid>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PurgeCallsResponse {
+    removed: usize,
+}
+
+async fn purge_calls(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<PurgeCallsRequest>,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let cutoff = request.hours.map(|hours| {
+        chrono::Utc::now() - chrono::Duration::hours(hours.clamp(1, 24 * 365) as i64)
+    });
+    let category = request
+        .category
+        .as_deref()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let mut removed = Vec::new();
+    {
+        let mut calls = state.calls.write().expect("calls lock poisoned");
+        let retained: Vec<Call> = calls
+            .drain(..)
+            .filter(|call| {
+                let matches = cutoff.is_none_or(|cutoff| call.started_at >= cutoff)
+                    && category
+                        .as_ref()
+                        .is_none_or(|value| call.category.to_ascii_lowercase().contains(value))
+                    && request
+                        .talkgroup_id
+                        .is_none_or(|talkgroup| call.talkgroup_id == talkgroup)
+                    && request
+                        .system_id
+                        .is_none_or(|system_id| call.system_id == system_id);
+                if matches {
+                    removed.push(call.clone());
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+        *calls = retained.into();
+    }
+    let count = removed.len();
+    if count > 0 {
+        crate::sqlite::delete_calls(&removed.iter().map(|call| call.id).collect::<Vec<_>>());
+        *state.purge_undo.write().expect("purge undo lock poisoned") = Some(removed);
+    }
+    Json(PurgeCallsResponse { removed: count }).into_response()
+}
+
+async fn undo_purge_calls(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let restored = state
+        .purge_undo
+        .write()
+        .expect("purge undo lock poisoned")
+        .take();
+    let Some(restored) = restored else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let count = restored.len();
+    {
+        let mut calls = state.calls.write().expect("calls lock poisoned");
+        calls.extend(restored.clone());
+        let mut ordered: Vec<Call> = calls.drain(..).collect();
+        ordered.sort_by_key(|call| std::cmp::Reverse(call.started_at));
+        ordered.truncate(5000);
+        calls.extend(ordered);
+    }
+    for call in restored {
+        crate::sqlite::upsert_call(&call);
+    }
+    Json(PurgeCallsResponse { removed: count }).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationsAskRequest {
+    question: String,
+    #[serde(default = "default_ask_hours")]
+    hours: u32,
+}
+
+fn default_ask_hours() -> u32 {
+    4
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationsAskResponse {
+    answer: String,
+    cited_call_ids: Vec<uuid::Uuid>,
+    status: String,
+}
+
+async fn operations_ask(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<OperationsAskRequest>,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let question = request.question.trim();
+    if question.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Question is required").into_response();
+    }
+    let hours = request.hours.clamp(1, 24);
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours as i64);
+    let calls: Vec<Call> = state
+        .calls
+        .read()
+        .expect("calls lock poisoned")
+        .iter()
+        .filter(|call| call.started_at >= cutoff)
+        .cloned()
+        .collect();
+    let mut context = String::new();
+    let mut cited = Vec::new();
+    for call in calls.iter().rev().take(40) {
+        cited.push(call.id);
+        context.push_str(&format!(
+            "- {} {} {}: {}\n",
+            call.started_at.to_rfc3339(),
+            call.talkgroup_label,
+            call.category,
+            call.transcript
+                .as_deref()
+                .or(call.summary.as_deref())
+                .unwrap_or("(no transcript)")
+        ));
+        if context.len() > 8000 {
+            break;
+        }
+    }
+    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    if !settings.ai_enabled {
+        return Json(OperationsAskResponse {
+            answer: "AI is disabled in settings.".into(),
+            cited_call_ids: cited,
+            status: "disabled".into(),
+        })
+        .into_response();
+    }
+    if settings.effective_summary_url().is_none() {
+        return Json(OperationsAskResponse {
+            answer: "Summary provider URL is not configured.".into(),
+            cited_call_ids: cited,
+            status: "provider-unconfigured".into(),
+        })
+        .into_response();
+    };
+    let prompt = format!(
+        "You are a radio operations assistant. Answer the operator question using only the call history below. Cite talkgroups and times when possible. If the history does not support an answer, say so.\n\nQuestion: {question}\n\nHistory:\n{context}"
+    );
+    let answer = match crate::providers::summarize(
+        &crate::providers::http_client(),
+        &settings,
+        &context,
+        &prompt,
+    )
+    .await
+    {
+        Ok(text) if !text.trim().is_empty() => text,
+        Ok(_) => "Summary provider returned an invalid response.".into(),
+        Err(_) => "Summary provider is unavailable.".into(),
+    };
+    let status = if answer.contains("unavailable") || answer.contains("invalid") {
+        "provider-unavailable".into()
+    } else {
+        "generated".into()
+    };
+    Json(OperationsAskResponse {
+        answer,
+        cited_call_ids: cited,
+        status,
+    })
+    .into_response()
+}
+
+async fn rdio_call_upload(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: String,
+) -> StatusCode {
+    let settings = state.settings.read().expect("settings lock poisoned");
+    if !settings.compat_ingest_enabled {
+        drop(settings);
+        return StatusCode::NOT_FOUND;
+    }
+    drop(settings);
+    let payload = headers
+        .get("x-sidecar-path")
+        .and_then(|value| value.to_str().ok())
+        .map(std::path::PathBuf::from)
+        .and_then(|path| crate::file_ingest::normalize_sidecar(&body, &path))
+        .unwrap_or(body);
+    if crate::decoder::ingest_status_payload(&state, &payload) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::BAD_REQUEST
+    }
+}
+
 fn merge_wavs(wavs: &[Vec<u8>]) -> Option<Vec<u8>> {
     let first = wavs.first()?.clone();
     if first.len() < 12 || &first[0..4] != b"RIFF" || &first[8..12] != b"WAVE" {
@@ -1580,38 +1891,91 @@ fn wav_data_offsets(wav: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
-async fn discord_status() -> Json<serde_json::Value> {
+async fn discord_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let settings = state.settings.read().expect("settings lock poisoned");
     Json(serde_json::json!({
-        "configured": std::env::var("TRUNKSCOPE_DISCORD_WEBHOOK_URL").map(|value| !value.trim().is_empty()).unwrap_or(false),
+        "configured": settings.effective_discord_webhook_url().is_some(),
+        "keywordRules": settings.discord_keyword_rules.len(),
         "mode": "finalized-summary"
     }))
 }
 
-async fn geocoder_status() -> Json<serde_json::Value> {
+async fn geocoder_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let settings = state.settings.read().expect("settings lock poisoned");
     Json(serde_json::json!({
-        "configured": std::env::var("TRUNKSCOPE_GEOCODER_URL").map(|value| !value.trim().is_empty()).unwrap_or(false),
+        "configured": settings.effective_geocoder_url().is_some(),
+        "provider": settings.geocoder_provider,
         "mode": "local-evidence-first"
     }))
+}
+
+async fn transcribe_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let settings = state.settings.read().expect("settings lock poisoned");
+    Json(serde_json::json!({
+        "configured": crate::providers::effective_transcribe_url(&settings).is_some(),
+        "provider": settings.transcribe_provider,
+        "model": settings.transcribe_model
+    }))
+}
+
+async fn summary_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let settings = state.settings.read().expect("settings lock poisoned");
+    Json(serde_json::json!({
+        "configured": settings.effective_summary_url().is_some(),
+        "provider": settings.summary_provider,
+        "model": settings.summary_model
+    }))
+}
+
+async fn transcribe_test(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    match crate::providers::test_transcribe(&settings).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => (StatusCode::BAD_GATEWAY, error).into_response(),
+    }
+}
+
+async fn summary_test(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    match crate::providers::test_summary(&settings).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => (StatusCode::BAD_GATEWAY, error).into_response(),
+    }
+}
+
+async fn geocoder_test(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    match crate::providers::test_geocoder(&settings).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => (StatusCode::BAD_GATEWAY, error).into_response(),
+    }
 }
 
 async fn discord_test(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let Ok(webhook) = std::env::var("TRUNKSCOPE_DISCORD_WEBHOOK_URL") else {
+    let webhook = state
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .effective_discord_webhook_url();
+    let Some(webhook) = webhook else {
         return (
             StatusCode::NOT_IMPLEMENTED,
             "Discord webhook is not configured",
         )
             .into_response();
     };
-    if webhook.trim().is_empty() {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            "Discord webhook is not configured",
-        )
-            .into_response();
-    }
     match reqwest::Client::new().post(webhook).json(&serde_json::json!({"username":"TrunkScope","content":"TrunkScope Discord integration test","allowed_mentions":{"parse":[]}})).send().await {
         Ok(response) if response.status().is_success() => StatusCode::NO_CONTENT.into_response(),
         Ok(response) => (StatusCode::BAD_GATEWAY, format!("Discord returned {}", response.status())).into_response(),
@@ -1923,25 +2287,39 @@ async fn delete_talkgroup(
 async fn import_systems(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<serde_json::Value>,
+    body: Bytes,
 ) -> Response {
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let profiles: Vec<SystemProfile> = if let Some(items) = payload.get("systems") {
-        match serde_json::from_value(items.clone()) {
-            Ok(value) => value,
-            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-        }
-    } else if payload.is_array() {
-        match serde_json::from_value(payload) {
-            Ok(value) => value,
-            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-        }
+    let profiles: Vec<SystemProfile> = if headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/csv"))
+    {
+        let Ok(csv) = String::from_utf8(body.to_vec()) else {
+            return StatusCode::BAD_REQUEST.into_response();
+        };
+        crate::imports::parse_systems_csv(&csv)
     } else {
-        match serde_json::from_value(payload) {
-            Ok(profile) => vec![profile],
-            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            return StatusCode::BAD_REQUEST.into_response();
+        };
+        if let Some(items) = payload.get("systems") {
+            match serde_json::from_value(items.clone()) {
+                Ok(value) => value,
+                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            }
+        } else if payload.is_array() {
+            match serde_json::from_value(payload) {
+                Ok(value) => value,
+                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            }
+        } else {
+            match serde_json::from_value(payload) {
+                Ok(profile) => vec![profile],
+                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            }
         }
     };
     if profiles.is_empty() {
@@ -1996,6 +2374,7 @@ async fn import_systems(
 async fn import_talkgroups(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
     if !admin_allowed(&state, &headers) {
@@ -2005,17 +2384,34 @@ async fn import_talkgroups(
     let Some(csv) = csv else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let mut lines = csv.lines().filter(|line| !line.trim().is_empty());
-    let Some(header) = lines.next() else {
+    let system_id = query
+        .get("systemId")
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        .or_else(|| {
+            state
+                .systems
+                .read()
+                .expect("systems lock poisoned")
+                .first()
+                .map(|system| system.id)
+        })
+        .unwrap_or_default();
+    let merge = query
+        .get("merge")
+        .map(|value| value == "true" || value == "1")
+        .unwrap_or(false);
+    let existing = state
+        .talkgroups
+        .read()
+        .expect("talkgroup lock poisoned")
+        .clone();
+    let Some(result) = crate::imports::parse_talkgroup_csv(
+        &csv,
+        &crate::imports::TalkgroupImportOptions { system_id, merge },
+        &existing,
+    ) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let header_lower = header.to_ascii_lowercase();
-    if !header_lower.contains("decimal") || !header_lower.contains("alpha") {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    if lines.next().is_none() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
     let root = std::env::var("TRUNKSCOPE_CALLS_PATH")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("/var/lib/trunkscope/calls"));
@@ -2026,46 +2422,19 @@ async fn import_talkgroups(
     if crate::state::atomic_write(&path, csv.as_bytes()).is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    // Hydrate the live API catalog from the same import so the UI and decoder
-    // observe identical data immediately; do not require a process restart.
-    let system_id = state
-        .systems
-        .read()
-        .expect("systems lock poisoned")
-        .first()
-        .map(|system| system.id)
-        .unwrap_or_default();
-    let mut imported = Vec::new();
-    for line in csv.lines().skip(1).filter(|line| !line.trim().is_empty()) {
-        let fields: Vec<String> = line
-            .split(',')
-            .map(|field| field.trim().trim_matches('"').to_string())
-            .collect();
-        let Some(decimal_id) = fields.first().and_then(|field| field.parse::<u32>().ok()) else {
-            continue;
-        };
-        let Some(alpha_tag) = fields.get(2).filter(|field| !field.is_empty()).cloned() else {
-            continue;
-        };
-        imported.push(Talkgroup {
-            id: uuid::Uuid::new_v4(),
-            system_id,
-            decimal_id,
-            alpha_tag,
-            description: fields.get(4).cloned().unwrap_or_default(),
-            category: fields.get(6).cloned().unwrap_or_default(),
-            priority: 0,
-            enabled: true,
-            record: true,
-            public_allowed: false,
-        });
-    }
-    if !imported.is_empty() {
-        *state.talkgroups.write().expect("talkgroup lock poisoned") = imported;
+    if !result.imported.is_empty() {
+        *state.talkgroups.write().expect("talkgroup lock poisoned") = result.imported;
         persist_talkgroups(&state);
     }
     write_decoder_config(&state);
-    Json(serde_json::json!({ "imported": true, "rows": csv.lines().skip(1).filter(|line| !line.trim().is_empty()).count(), "path": "imported-talkgroups.csv" })).into_response()
+    Json(serde_json::json!({
+        "imported": true,
+        "rows": result.rows,
+        "merge": merge,
+        "systemId": system_id,
+        "path": "imported-talkgroups.csv"
+    }))
+    .into_response()
 }
 
 async fn preview_talkgroups(
@@ -2103,14 +2472,123 @@ async fn preview_talkgroups(
     (StatusCode::OK, Json(serde_json::json!({"valid": count > 0, "rows": count, "sample": rows, "requiresConfirmation": true}))).into_response()
 }
 
-async fn preview_systems(
+async fn import_sites(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<serde_json::Value>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    body: Bytes,
 ) -> Response {
     if !admin_allowed(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let Ok(csv) = String::from_utf8(body.to_vec()) else {
+        return (StatusCode::BAD_REQUEST, "CSV must be UTF-8").into_response();
+    };
+    let Some(result) = crate::imports::parse_site_csv(&csv) else {
+        return (StatusCode::BAD_REQUEST, "Invalid site CSV").into_response();
+    };
+    let system_id = query
+        .get("systemId")
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        .unwrap_or_default();
+    let merge = query
+        .get("merge")
+        .map(|value| value == "true" || value == "1")
+        .unwrap_or(false);
+    let mut systems = state.systems.write().expect("systems lock poisoned");
+    let Some(system) = systems.iter_mut().find(|system| system.id == system_id) else {
+        return (StatusCode::NOT_FOUND, "System not found").into_response();
+    };
+    if merge {
+        for site in result.sites {
+            if let Some(existing) = system.sites.iter_mut().find(|item| item.name == site.name) {
+                *existing = site;
+            } else {
+                system.sites.push(site);
+            }
+        }
+    } else {
+        system.sites = result.sites;
+    }
+    if let Ok(document) = serde_json::to_vec_pretty(&*systems) {
+        let _ = crate::state::atomic_write(&state.systems_path, &document);
+    }
+    drop(systems);
+    write_decoder_config(&state);
+    Json(serde_json::json!({
+        "imported": true,
+        "rows": result.rows,
+        "systemId": system_id,
+        "merge": merge
+    }))
+    .into_response()
+}
+
+async fn preview_sites(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Ok(csv) = String::from_utf8(body.to_vec()) else {
+        return (StatusCode::BAD_REQUEST, "CSV must be UTF-8").into_response();
+    };
+    let Some(result) = crate::imports::parse_site_csv(&csv) else {
+        return (StatusCode::BAD_REQUEST, "Invalid site CSV").into_response();
+    };
+    let sample: Vec<_> = result
+        .sites
+        .iter()
+        .take(10)
+        .map(|site| serde_json::json!({
+            "name": site.name,
+            "nac": site.nac,
+            "controlChannelsHz": site.control_channels_hz,
+            "voiceChannelsHz": site.voice_channels_hz
+        }))
+        .collect();
+    (StatusCode::OK, Json(serde_json::json!({
+        "valid": result.rows > 0,
+        "rows": result.rows,
+        "sample": sample,
+        "requiresConfirmation": true
+    })))
+    .into_response()
+}
+
+async fn preview_systems(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/csv"))
+    {
+        let Ok(csv) = String::from_utf8(body.to_vec()) else {
+            return (StatusCode::BAD_REQUEST, "CSV must be UTF-8").into_response();
+        };
+        let profiles = crate::imports::parse_systems_csv(&csv);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "valid": !profiles.is_empty(),
+                "rows": profiles.len(),
+                "preview": profiles,
+                "requiresConfirmation": true
+            })),
+        )
+            .into_response();
+    }
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return (StatusCode::BAD_REQUEST, "Invalid JSON body").into_response();
+    };
     let items = if payload.is_array() {
         payload.as_array().cloned().unwrap_or_default()
     } else if let Some(items) = payload.get("systems").and_then(|v| v.as_array()) {
@@ -2247,7 +2725,8 @@ async fn save_settings(
                 | "gpu-qwen3"
                 | "experimental-radio"
         )
-        || !(settings.transcribe_url.starts_with("http://")
+        || !(settings.transcribe_url.is_empty()
+            || settings.transcribe_url.starts_with("http://")
             || settings.transcribe_url.starts_with("https://"))
         || settings.public_feed_delay_seconds > 86_400
         || !(1..=60).contains(&settings.summary_refresh_minutes)
@@ -2255,6 +2734,17 @@ async fn save_settings(
         || settings.audio_retention_days == 0
         || settings.transcript_retention_days == 0
         || settings.metadata_retention_days == 0
+        || !optional_http_url(&settings.summary_url)
+        || !optional_http_url(&settings.geocoder_url)
+        || !optional_http_url(&settings.discord_webhook_url)
+        || settings
+            .discord_keyword_rules
+            .iter()
+            .any(|rule| !optional_http_url(&rule.webhook_url))
+        || settings
+            .discord_talkgroup_rules
+            .iter()
+            .any(|rule| !optional_http_url(&rule.webhook_url))
     {
         return (StatusCode::BAD_REQUEST, Json(settings));
     }
@@ -2562,6 +3052,7 @@ mod tests {
     #[test]
     fn decoder_config_includes_conventional_fm_channels() {
         let state = test_state();
+        state.systems.write().unwrap().clear();
         state.systems.write().unwrap().push(SystemProfile {
             id: uuid::Uuid::new_v4(),
             name: "Jackson County Fire".into(),
@@ -2583,9 +3074,10 @@ mod tests {
         let systems = config["systems"].as_array().unwrap();
         assert_eq!(systems.len(), 1);
         assert_eq!(systems[0]["type"], "conventional");
+        assert_eq!(systems[0]["shortName"], "Jackson County Fire");
         assert_eq!(
             systems[0]["channelFile"],
-            "/generated/decoder/analog-channels.csv"
+            "/var/lib/trunkscope/audio/decoder/analog-channels.csv"
         );
         assert!(config["sources"][0]["center"].as_u64().unwrap() > 150_000_000);
         assert!(
@@ -2740,5 +3232,62 @@ mod tests {
         assert_eq!(parse_range("bytes=100-", 200), Some((100, 199)));
         assert_eq!(parse_range("bytes=-25", 200), Some((175, 199)));
         assert_eq!(parse_range("bytes=500-", 200), None);
+    }
+
+    #[test]
+    fn optional_http_url_accepts_empty_or_http_values() {
+        assert!(optional_http_url(""));
+        assert!(optional_http_url("http://ollama:11434/api/generate"));
+        assert!(optional_http_url("https://discord.com/api/webhooks/test"));
+        assert!(!optional_http_url("ftp://example.com"));
+    }
+
+    #[tokio::test]
+    async fn purge_and_undo_round_trip() {
+        let state = test_state();
+        let call_id = uuid::Uuid::new_v4();
+        state.calls.write().expect("calls lock poisoned").push_back(Call {
+            id: call_id,
+            system_id: uuid::Uuid::new_v4(),
+            system_name: "Test".into(),
+            site_id: uuid::Uuid::new_v4(),
+            talkgroup_id: 1001,
+            talkgroup_label: "Dispatch".into(),
+            category: "Law".into(),
+            frequency_hz: 851_012_500,
+            tdma_slot: None,
+            source_radio_id: None,
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            state: trunkscope_domain::CallState::Complete,
+            encryption: trunkscope_domain::EncryptionState::Clear,
+            signal_dbfs: -40.0,
+            transcript: None,
+            summary: None,
+            location: None,
+            audio: None,
+        });
+        let response = router(Arc::clone(&state))
+            .oneshot(
+                Request::post("/api/v1/calls/purge")
+                    .header("content-type", "application/json")
+                    .header("cookie", "trunkscope_session=test-session")
+                    .body(Body::from(r#"{"hours":24}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(state.calls.read().expect("calls lock poisoned").is_empty());
+        let undo = router(state)
+            .oneshot(
+                Request::post("/api/v1/calls/purge/undo")
+                    .header("cookie", "trunkscope_session=test-session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(undo.status(), StatusCode::OK);
     }
 }

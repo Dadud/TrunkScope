@@ -2,11 +2,15 @@ mod api;
 mod auth;
 mod decoder;
 mod file_ingest;
+mod imports;
 mod persistence;
 mod processor;
+mod providers;
 mod radiod;
+mod retention;
 mod scanner;
 mod simulator;
+mod sqlite;
 mod state;
 
 use std::{env, net::SocketAddr, sync::Arc};
@@ -28,6 +32,8 @@ async fn main() -> Result<()> {
         .init();
 
     let state = Arc::new(AppState::new());
+    sqlite::hydrate(&state);
+    retention::spawn(Arc::clone(&state));
     // Session boundaries are runtime state, not a UI heuristic. Finalize an
     // exchange once it has been quiet for the configured ten-second dwell.
     {

@@ -3,75 +3,22 @@
 TrunkScope is a clean-sheet, receive-only SDR scanner appliance. The first release targets
 P25 Phase 1/2 and conventional NFM on Linux with RTL-SDR, Airspy, and SDRplay receivers.
 
-This repository currently contains the first executable vertical slice:
+## Quick start (recommended)
 
-- `apps/control-plane`: Rust API and live-event service with a deterministic RF simulator.
-- `apps/web`: React/TypeScript progressive web application.
-- `native/radiod`: native Linux RF daemon boundary and simulator contract.
-- `crates/domain`: shared radio, call, policy, and configuration types.
-- `contracts`: public/internal wire contracts.
-- `deploy`: PostgreSQL and local object-storage development services.
-
-## Quick start
-
-Requirements: Rust 1.88+, Node 22+, pnpm 10+, and Docker for the appliance path.
-
-### Single-container appliance (USB SDR)
-
-The all-in-one image serves the operator console, control plane, and Trunk
-Recorder on port `8080`. Mount one appdata directory and pass `/dev/bus/usb`.
-Ollama and Whisper stay optional external services.
+The **single-container appliance** is the only supported operator install path. See [docs/appliance-install.md](docs/appliance-install.md).
 
 ```bash
 docker compose -f deploy/appliance.yml up -d --build
 ```
 
-Or, after GitHub Actions publishes the image:
-
-```bash
-docker run --name trunkscope --restart unless-stopped \
-  -p 18088:8080 \
-  --device /dev/bus/usb \
-  --shm-size 256m --ipc host \
-  -v trunkscope-data:/var/lib/trunkscope \
-  ghcr.io/dadud/trunkscope:latest
-```
-
 Open `http://127.0.0.1:18088`. On Unraid, import
-[`deploy/unraid/trunkscope.xml`](deploy/unraid/trunkscope.xml) and map host port
-`18088`. Set `TRUNKSCOPE_RADIO_DEVICE` to match the stick (`soapy=0,driver=rtlsdr`,
-`soapy=0,driver=airspy`, or `soapy=0,driver=sdrplay`). SDRplay also needs the
-licensed vendor runtime mounted at `/opt/sdrplay`.
+[`deploy/unraid/trunkscope.xml`](deploy/unraid/trunkscope.xml).
 
-Trunk Recorder connects to `ws://127.0.0.1:8080/api/v1/decoder/status` and posts
-finished call sidecars to `/api/v1/decoder/ingest`.
+External AI (Speaches, Ollama, vLLM, or cloud APIs) is configured in the web UI or via env vars — it is never bundled in the image.
 
-### Docker Compose stack
+### Docker Compose multi-service stack (deferred)
 
-Docker Compose on a Linux host remains the full multi-service installation
-(PostgreSQL, optional MinIO, separate web/nginx, and optional AI profiles). It
-works on a standard Linux server, mini-PC, or VM and is the reference path for
-testing and upgrades. Unraid can also run this stack; see
-[deploy/unraid/README.md](deploy/unraid/README.md).
-
-```bash
-cp .env.example .env
-docker compose -f deploy/compose.yml up -d
-```
-
-In another terminal:
-
-```bash
-pnpm install
-pnpm --filter @trunkscope/web dev
-```
-
-The API listens on `http://127.0.0.1:8080`; the UI listens on
-`http://127.0.0.1:5173`. The Docker/Unraid UI is published on port `18088` by default. For a development-only demo, set `TRUNKSCOPE_RADIO_MODE=simulator`; production
-defaults to the hardware radiod path. The simulator emits trunked calls so the live
-console works without radio hardware. Hardware `radiod` mode currently validates
-and monitors the SDR stream; decoded calls require the central decoder profile
-described below.
+The full Compose stack (Postgres, MinIO, multi-service) in `deploy/compose.yml` is **deferred** — kept for development reference only, not documented as an install path.
 
 ## RSP1B over LAN
 

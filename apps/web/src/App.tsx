@@ -23,6 +23,7 @@ import { OperationsDrawer } from "./components/OperationsDrawer";
 import { TalkgroupDrawer } from "./components/TalkgroupDrawer";
 import { ArchiveDrawer } from "./components/ArchiveDrawer";
 import { ApplianceDrawer } from "./components/ApplianceDrawer";
+import { FirstRunWizard } from "./components/FirstRunWizard";
 
 const emptySnapshot: Snapshot = {
   receivers: [],
@@ -237,6 +238,13 @@ export default function App() {
 
   return (
     <div className="tactical-app-root">
+      {settings && !settings.wizardCompleted && (
+        <FirstRunWizard
+          settings={settings}
+          onComplete={(saved) => setSettings(saved)}
+          onDismiss={() => setSettings({ ...settings, wizardCompleted: true })}
+        />
+      )}
       {/* Top Header Controls */}
       <Header
         searchQuery={searchQuery}
@@ -265,8 +273,16 @@ export default function App() {
           selectedCall={selectedCall}
           volume={muted ? 0 : volume}
           homeCenter={homeCoords}
+          isAdmin={Boolean(session)}
           onSelectCall={setSelectedCall}
           onOpenTalkgroup={handleOpenTalkgroup}
+          onCallUpdated={(call) => {
+            setData((current) => ({
+              ...current,
+              calls: current.calls.map((item) => (item.id === call.id ? call : item)),
+            }));
+            setSelectedCall((current) => (current?.id === call.id ? call : current));
+          }}
         />
 
         {/* Floating Live Feed HUD Overlay */}

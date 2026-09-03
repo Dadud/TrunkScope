@@ -58,6 +58,31 @@ async fn consume_status(mut socket: WebSocket, state: Arc<AppState>) {
 }
 
 fn record_control_lock(state: &AppState, payload: &str) {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) {
+        let lock_event = value
+            .get("type")
+            .and_then(|field| field.as_str())
+            .is_some_and(|field| {
+                field.contains("control")
+                    || field.eq_ignore_ascii_case("controlchannel")
+                    || field.eq_ignore_ascii_case("control_channel")
+            })
+            || value
+                .get("controlChannel")
+                .or_else(|| value.get("control_channel"))
+                .is_some()
+            || value
+                .get("status")
+                .and_then(|field| field.as_str())
+                .is_some_and(|field| field.contains("control"));
+        if lock_event {
+            *state
+                .decoder_control_lock
+                .write()
+                .expect("decoder lock poisoned") = Some(Utc::now());
+            return;
+        }
+    }
     let value = payload.to_ascii_lowercase();
     let lock_event = (value.contains("control")
         && (value.contains("lock") || value.contains("channel")))

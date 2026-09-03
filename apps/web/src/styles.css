@@ -1687,6 +1687,28 @@ button, input, select, textarea {
   background: radial-gradient(circle at center, #111a2e 0%, #06090e 100%);
 }
 
+.first-run-wizard {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 9, 14, 0.85);
+  backdrop-filter: blur(4px);
+}
+
+.first-run-panel {
+  width: min(520px, 92vw);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-bright);
+  border-radius: 8px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .login-card {
   width: 380px;
   background: var(--bg-surface);
