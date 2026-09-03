@@ -7,16 +7,25 @@ import {
   deleteScanList,
   deleteSystem,
   deleteTalkgroup,
+  discoverReceivers,
+  discoverSummaryModels,
+  discoverTranscribeModels,
   getAuditLog,
   getAuthStatus,
   getDecoderConfig,
   getDiagnostics,
+  getDiscordStatus,
+  getGeocoderStatus,
   getPublicPolicy,
+  getReceiverCapabilities,
+  getReceiverPresets,
   getRuntime,
   getScanLists,
   getSettings,
+  getSummaryStatus,
   getSystems,
   getTalkgroups,
+  getTranscribeStatus,
   importTalkgroups,
   importSites,
   receiverAction,
@@ -33,17 +42,24 @@ import {
   testTranscribeIntegration,
   AI_STACK_PRESETS,
   updateReceiver,
+  verifyReceiver,
   type AppSettings,
   type AuditEntry,
   type DiscordKeywordRule,
   type DiscordTalkgroupRule,
+  type IntegrationStatus,
   type PublicationPolicy,
+  type ReceiverDevicePreset,
   type ReceiverInput,
   type ScanList,
   type SystemProfile,
   type Talkgroup,
 } from "../api";
 import { SitesEditor } from "../SitesEditor";
+import { IntegrationModelField } from "./IntegrationModelField";
+import { MhzField } from "./MhzField";
+import { applySubmodelPreset, presetSummary } from "../receiverPresets";
+import { deriveAiProfile, pickSummaryModel, pickTranscribeModel } from "../integrationModels";
 import { formatFrequency, signalQuality } from "../format";
 
 interface ApplianceDrawerProps {
@@ -55,6 +71,38 @@ interface ApplianceDrawerProps {
 }
 
 type Tab = "radio" | "receivers" | "scanlists" | "systems" | "talkgroups" | "integrations" | "policy" | "security" | "diagnostics";
+
+const DRIVER_OPTIONS: Array<{ value: ReceiverInput["driver"]; label: string }> = [
+  { value: "sdrplay", label: "SDRplay RSP" },
+  { value: "rtlSdr", label: "RTL-SDR" },
+  { value: "airspy", label: "Airspy" },
+  { value: "hackRf", label: "HackRF" },
+  { value: "plutoSdr", label: "PlutoSDR" },
+  { value: "bladeRf", label: "bladeRF" },
+  { value: "limeSdr", label: "LimeSDR" },
+  { value: "genericSoapy", label: "Generic Soapy" },
+  { value: "simulator", label: "Simulator" },
+];
+
+// Mirrors soapy_driver_arg() in apps/control-plane/src/receiver_presets.rs
+const SOAPY_DRIVER_ARGS: Record<ReceiverInput["driver"], string> = {
+  sdrplay: "sdrplay",
+  rtlSdr: "rtlsdr",
+  airspy: "airspy",
+  hackRf: "hackrf",
+  plutoSdr: "plutosdr",
+  bladeRf: "bladerf",
+  limeSdr: "lms",
+  genericSoapy: "driver",
+  simulator: "driver",
+};
+
+const parseNacHex = (raw: string): number | undefined => {
+  const text = raw.trim().replace(/^0x/i, "");
+  if (!text || !/^[0-9a-f]+$/i.test(text)) return undefined;
+  const value = Number.parseInt(text, 16);
+  return value >= 0 && value <= 0xfff ? value : undefined;
+};
 
 export function ApplianceDrawer({
   isOpen,
@@ -81,11 +129,31 @@ export function ApplianceDrawer({
     label: "New SDR",
     driver: "sdrplay",
     serial: "",
-    centerFrequencyHz: 851012500,
-    sampleRateHz: 2400000,
+    centerFrequencyHz: 154_000_000,
+    sampleRateHz: 2_400_000,
     gainDb: 40,
     ppm: 0,
+    enabled: true,
+    role: "general",
+    soapyIndex: 0,
   });
+  const [discoveredDevices, setDiscoveredDevices] = useState<Awaited<ReturnType<typeof discoverReceivers>>>([]);
+  const [devicePresets, setDevicePresets] = useState<ReceiverDevicePreset[]>([]);
+  const [submodelId, setSubmodelId] = useState("");
+  const [integrationStatus, setIntegrationStatus] = useState<{
+    transcribe?: IntegrationStatus;
+    summary?: IntegrationStatus;
+    geocoder?: IntegrationStatus;
+    discord?: IntegrationStatus;
+  }>({});
+  const [transcribeModels, setTranscribeModels] = useState<string[]>([]);
+  const [summaryModels, setSummaryModels] = useState<string[]>([]);
+  const [transcribeModelSource, setTranscribeModelSource] = useState<string>();
+  const [summaryModelSource, setSummaryModelSource] = useState<string>();
+  const [transcribeModelsLoading, setTranscribeModelsLoading] = useState(false);
+  const [summaryModelsLoading, setSummaryModelsLoading] = useState(false);
+  const [transcribeModelsError, setTranscribeModelsError] = useState<string>();
+  const [summaryModelsError, setSummaryModelsError] = useState<string>();
   const [showAddReceiver, setShowAddReceiver] = useState(false);
 
   // Scan Lists State
@@ -115,6 +183,17 @@ export function ApplianceDrawer({
     getSettings().then(setSettings).catch(() => undefined);
     getScanLists().then(setScanLists).catch(() => undefined);
     getSystems().then(setSystems).catch(() => undefined);
+    getReceiverPresets().then((presets) => {
+      setDevicePresets(presets);
+      const preset = presets.find((item) => item.driver === receiverDraft.driver);
+      const submodel = preset?.submodels[0];
+      if (submodel && !submodelId) {
+        setReceiverDraft((draft) =>
+          draft.driver === receiverDraft.driver ? applySubmodelPreset(draft, submodel) : draft,
+        );
+        setSubmodelId(submodel.id);
+      }
+    }).catch(() => undefined);
     getTalkgroups().then(setTalkgroups).catch(() => undefined);
     getPublicPolicy().then(setPolicy).catch(() => undefined);
     getRuntime().then(setRuntime).catch(() => undefined);
@@ -122,9 +201,153 @@ export function ApplianceDrawer({
     getAuditLog().then(setAuditLog).catch(() => undefined);
     getDecoderConfig().then((value) => setDecoderConfig(JSON.stringify(value, null, 2))).catch(() => undefined);
     getAuthStatus().then((status) => setLocalOnly(Boolean(status.localOnly))).catch(() => undefined);
+    Promise.all([
+      getTranscribeStatus().catch(() => undefined),
+      getSummaryStatus().catch(() => undefined),
+      getGeocoderStatus().catch(() => undefined),
+      getDiscordStatus().catch(() => undefined),
+    ]).then(([transcribe, summary, geocoder, discord]) => {
+      setIntegrationStatus({ transcribe, summary, geocoder, discord });
+    });
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const handleDiscoverReceivers = async () => {
+    setStatusMessage("Scanning for USB and network SDR devices…");
+    try {
+      const devices = await discoverReceivers();
+      setDiscoveredDevices(devices);
+      setStatusMessage(devices.length ? `Found ${devices.length} device(s)` : "No SDR devices detected");
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : "Discovery failed");
+    }
+  };
+
+  const applyDiscoveredDevice = (device: (typeof discoveredDevices)[number]) => {
+    setReceiverDraft((draft) => ({
+      ...draft,
+      label: device.label || `Soapy #${device.index}`,
+      driver: device.suggestedDriver,
+      serial: device.args || `driver=${device.driver}`,
+      soapyIndex: device.index,
+    }));
+    setShowAddReceiver(true);
+    setStatusMessage(`Selected ${device.label} (soapy=${device.index})`);
+  };
+
+  const systemsUsingReceiver = (receiverId: string) =>
+    systems.filter((system) => system.receiverId === receiverId).map((system) => system.name);
+
+  // Seed the Soapy args when the driver changes and the operator has not
+  // supplied custom device args (e.g. a remote= endpoint).
+  const seedSerialForDriver = (current: string, next: ReceiverInput["driver"]): string => {
+    const trimmed = current.trim();
+    if (!trimmed || /^driver=[a-z0-9]+$/i.test(trimmed)) {
+      return `driver=${SOAPY_DRIVER_ARGS[next]}`;
+    }
+    return current;
+  };
+
+  const activeSubmodelOptions =
+    devicePresets.find((preset) => preset.driver === receiverDraft.driver)?.submodels ?? [];
+  const activeSubmodel =
+    activeSubmodelOptions.find((submodel) => submodel.id === submodelId) ?? activeSubmodelOptions[0];
+
+  const applyOptimalDefaults = (driver: ReceiverInput["driver"], serial: string) => {
+    const preset = devicePresets.find((item) => item.driver === driver);
+    const submodel = preset?.submodels[0];
+    setReceiverDraft((draft) => {
+      const next = { ...draft, driver, serial: seedSerialForDriver(serial, driver) };
+      return submodel ? applySubmodelPreset(next, submodel) : next;
+    });
+    setSubmodelId(submodel?.id ?? "");
+    if (submodel) {
+      setStatusMessage(`Applied ${submodel.label} defaults: ${presetSummary(submodel)}`);
+    }
+  };
+
+  const refreshTranscribeModels = async () => {
+    if (!settings?.transcribeUrl.trim()) {
+      setTranscribeModels([]);
+      setTranscribeModelsError("Transcribe URL is required");
+      return;
+    }
+    setTranscribeModelsLoading(true);
+    setTranscribeModelsError(undefined);
+    try {
+      const discovered = await discoverTranscribeModels({
+        transcribeUrl: settings.transcribeUrl,
+        transcribeProvider: settings.transcribeProvider,
+        transcribeApiKey: settings.transcribeApiKey,
+      });
+      setTranscribeModels(discovered.models);
+      setTranscribeModelSource(discovered.catalogUrl);
+      setSettings((current) => {
+        if (!current) return current;
+        const transcribeModel = pickTranscribeModel(discovered.models, current.transcribeModel);
+        return {
+          ...current,
+          transcribeModel,
+          aiProfile: deriveAiProfile(transcribeModel),
+        };
+      });
+    } catch (error) {
+      setTranscribeModels([]);
+      setTranscribeModelsError(error instanceof Error ? error.message : "Model discovery failed");
+    } finally {
+      setTranscribeModelsLoading(false);
+    }
+  };
+
+  const refreshSummaryModels = async () => {
+    if (!settings?.summaryUrl?.trim()) {
+      setSummaryModels([]);
+      setSummaryModelsError("Summary URL is required");
+      return;
+    }
+    setSummaryModelsLoading(true);
+    setSummaryModelsError(undefined);
+    try {
+      const discovered = await discoverSummaryModels({
+        summaryUrl: settings.summaryUrl,
+        summaryProvider: settings.summaryProvider,
+        summaryApiKey: settings.summaryApiKey,
+      });
+      setSummaryModels(discovered.models);
+      setSummaryModelSource(discovered.catalogUrl);
+      setSettings((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          summaryModel: pickSummaryModel(discovered.models, current.summaryModel),
+        };
+      });
+    } catch (error) {
+      setSummaryModels([]);
+      setSummaryModelsError(error instanceof Error ? error.message : "Model discovery failed");
+    } finally {
+      setSummaryModelsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "integrations" || !settings) return;
+    const timer = window.setTimeout(() => {
+      void refreshTranscribeModels();
+      void refreshSummaryModels();
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [
+    isOpen,
+    activeTab,
+    settings?.transcribeUrl,
+    settings?.transcribeProvider,
+    settings?.transcribeApiKey,
+    settings?.summaryUrl,
+    settings?.summaryProvider,
+    settings?.summaryApiKey,
+  ]);
 
   // Receiver actions
   const handleReceiverAction = async (id: string, action: "probe" | "start" | "stop" | "restart") => {
@@ -296,9 +519,9 @@ export function ApplianceDrawer({
               <div className="form-grid">
                 <label>Mode<select value={settings.radioMode} onChange={(e) => setSettings({ ...settings, radioMode: e.target.value })}><option value="simulator">Simulator</option><option value="radiod">radiod</option><option value="decoder">Decoder (Trunk Recorder)</option></select></label>
                 <label>Device<input value={settings.radioDevice} onChange={(e) => setSettings({ ...settings, radioDevice: e.target.value })} /></label>
-                <label>Center frequency (Hz)<input type="number" value={settings.radioFrequencyHz} onChange={(e) => setSettings({ ...settings, radioFrequencyHz: Number(e.target.value) })} /></label>
-                <label>Sample rate (Hz)<input type="number" value={settings.radioSampleRateHz} onChange={(e) => setSettings({ ...settings, radioSampleRateHz: Number(e.target.value) })} /></label>
-                <label>Bandwidth (Hz)<input type="number" value={settings.radioBandwidthHz ?? ""} onChange={(e) => setSettings({ ...settings, radioBandwidthHz: Number(e.target.value) || undefined })} /></label>
+                <label>Center frequency (MHz)<MhzField valueHz={settings.radioFrequencyHz} placeholder="851.0125" onChange={(radioFrequencyHz) => setSettings({ ...settings, radioFrequencyHz })} /></label>
+                <label>Sample rate (MHz)<MhzField valueHz={settings.radioSampleRateHz} placeholder="2.4" onChange={(radioSampleRateHz) => setSettings({ ...settings, radioSampleRateHz })} /></label>
+                <label>Bandwidth (MHz)<MhzField valueHz={settings.radioBandwidthHz} placeholder="0.2" onChange={(value) => setSettings({ ...settings, radioBandwidthHz: value || undefined })} /></label>
                 <label>Gain (dB)<input type="number" value={settings.radioGainDb ?? ""} onChange={(e) => setSettings({ ...settings, radioGainDb: Number(e.target.value) })} /></label>
                 <label className="checkbox-label"><input type="checkbox" checked={settings.radioAgc} onChange={(e) => setSettings({ ...settings, radioAgc: e.target.checked })} /> AGC enabled</label>
                 <label>PPM<input type="number" step="0.1" value={settings.radioPpm} onChange={(e) => setSettings({ ...settings, radioPpm: Number(e.target.value) })} /></label>
@@ -313,14 +536,29 @@ export function ApplianceDrawer({
             <div className="tab-pane">
               <div className="pane-header">
                 <h3>Hardware SDR Receivers</h3>
-                <button
-                  type="button"
-                  className="primary-btn"
-                  onClick={() => setShowAddReceiver(!showAddReceiver)}
-                >
-                  {showAddReceiver ? "Cancel" : "+ Add Receiver"}
-                </button>
+                <div className="btn-row">
+                  <button type="button" onClick={handleDiscoverReceivers}>Discover devices</button>
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    onClick={() => setShowAddReceiver(!showAddReceiver)}
+                  >
+                    {showAddReceiver ? "Cancel" : "+ Add Receiver"}
+                  </button>
+                </div>
               </div>
+
+              {discoveredDevices.length > 0 && (
+                <div className="config-box">
+                  <h4>Discovered devices</h4>
+                  {discoveredDevices.map((device) => (
+                    <div key={`${device.index}-${device.serial}`} className="btn-row">
+                      <span>#{device.index} {device.label} ({device.driver})</span>
+                      <button type="button" onClick={() => applyDiscoveredDevice(device)}>Use</button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {showAddReceiver && (
                 <div className="config-box">
@@ -339,46 +577,98 @@ export function ApplianceDrawer({
                       <select
                         value={receiverDraft.driver}
                         onChange={(e) =>
-                          setReceiverDraft({
-                            ...receiverDraft,
-                            driver: e.target.value as ReceiverInput["driver"],
-                          })
+                          applyOptimalDefaults(e.target.value as ReceiverInput["driver"], receiverDraft.serial)
                         }
                       >
-                        <option value="sdrplay">SDRplay RSP1B</option>
-                        <option value="rtlSdr">RTL-SDR</option>
-                        <option value="airspy">Airspy</option>
-                        <option value="simulator">Simulator</option>
+                        {DRIVER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
                       </select>
                     </label>
+                    {activeSubmodelOptions.length > 0 && (
+                      <label>
+                        Model
+                        <select
+                          value={activeSubmodel?.id ?? ""}
+                          onChange={(e) => {
+                            const submodel = activeSubmodelOptions.find((item) => item.id === e.target.value);
+                            if (!submodel) return;
+                            setSubmodelId(submodel.id);
+                            setReceiverDraft((draft) => applySubmodelPreset(draft, submodel));
+                            setStatusMessage(`Applied ${submodel.label} defaults: ${presetSummary(submodel)}`);
+                          }}
+                        >
+                          {activeSubmodelOptions.map((submodel) => (
+                            <option key={submodel.id} value={submodel.id}>{submodel.label}</option>
+                          ))}
+                        </select>
+                        {activeSubmodel?.notes && <small className="pane-desc">{activeSubmodel.notes}</small>}
+                      </label>
+                    )}
                     <label>
-                      Device String / Args
+                      Soapy device args
                       <input
                         type="text"
-                        placeholder="e.g. driver=sdrplay or driver=remote..."
+                        placeholder="driver=sdrplay"
                         value={receiverDraft.serial}
                         onChange={(e) => setReceiverDraft({ ...receiverDraft, serial: e.target.value })}
                       />
+                      <small className="pane-desc">Auto-filled from driver. Remote node: driver=remote,remote=192.168.1.50</small>
                     </label>
                     <label>
-                      Center Frequency (Hz)
-                      <input
-                        type="number"
-                        value={receiverDraft.centerFrequencyHz}
-                        onChange={(e) =>
-                          setReceiverDraft({ ...receiverDraft, centerFrequencyHz: Number(e.target.value) })
+                      Center Frequency (MHz)
+                      <MhzField
+                        valueHz={receiverDraft.centerFrequencyHz}
+                        placeholder="851.0125"
+                        onChange={(centerFrequencyHz) =>
+                          setReceiverDraft({ ...receiverDraft, centerFrequencyHz })
                         }
                       />
                     </label>
                     <label>
-                      Sample Rate (Hz)
-                      <input
-                        type="number"
-                        value={receiverDraft.sampleRateHz}
-                        onChange={(e) =>
-                          setReceiverDraft({ ...receiverDraft, sampleRateHz: Number(e.target.value) })
+                      Sample Rate (MHz)
+                      <MhzField
+                        valueHz={receiverDraft.sampleRateHz}
+                        placeholder="2.4"
+                        onChange={(sampleRateHz) =>
+                          setReceiverDraft({ ...receiverDraft, sampleRateHz })
                         }
                       />
+                    </label>
+                    <label>
+                      Soapy index
+                      <input
+                        type="number"
+                        value={receiverDraft.soapyIndex ?? 0}
+                        onChange={(e) =>
+                          setReceiverDraft({ ...receiverDraft, soapyIndex: Number(e.target.value) })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Role
+                      <select
+                        value={receiverDraft.role ?? "general"}
+                        onChange={(e) =>
+                          setReceiverDraft({
+                            ...receiverDraft,
+                            role: e.target.value as ReceiverInput["role"],
+                          })
+                        }
+                      >
+                        <option value="general">General</option>
+                        <option value="p25">P25</option>
+                        <option value="analog">Analog FM</option>
+                      </select>
+                    </label>
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={receiverDraft.enabled ?? true}
+                        onChange={(e) =>
+                          setReceiverDraft({ ...receiverDraft, enabled: e.target.checked })
+                        }
+                      /> Enabled
                     </label>
                     <label>
                       Gain (dB)
@@ -413,7 +703,12 @@ export function ApplianceDrawer({
                       <span>Rate: {(Number(r.sampleRateHz || 0) / 1e6).toFixed(2)} MHz</span>
                       <span>Gain: {r.gainDb ?? "Auto"} dB</span>
                       <span>Signal: {r.health.signalDbfs.toFixed(1)} dBFS</span>
+                      {r.soapyIndex != null && <span>Soapy: {r.soapyIndex}</span>}
+                      {r.enabled === false && <span className="live-tag">DISABLED</span>}
                     </div>
+                    {systemsUsingReceiver(r.id).length > 0 && (
+                      <p className="pane-desc">Used by: {systemsUsingReceiver(r.id).join(", ")}</p>
+                    )}
 
                     <div className="meter-wrap">
                       <div
@@ -426,6 +721,22 @@ export function ApplianceDrawer({
                       <button type="button" onClick={() => handleReceiverAction(r.id, "probe")}>
                         Probe
                       </button>
+                      <button type="button" onClick={async () => {
+                        try {
+                          const caps = await getReceiverCapabilities(r.id);
+                          setStatusMessage(`Gain elements: ${caps?.gainElements?.join(", ") || "none"}`);
+                        } catch (error) {
+                          setStatusMessage(error instanceof Error ? error.message : "Capabilities unavailable");
+                        }
+                      }}>Capabilities</button>
+                      <button type="button" onClick={async () => {
+                        try {
+                          const result = await verifyReceiver(r.id);
+                          setStatusMessage(result.passed ? "Receiver verification passed" : `Verify failed: ${result.checks.filter((c) => !c.passed).map((c) => c.name).join(", ")}`);
+                        } catch (error) {
+                          setStatusMessage(error instanceof Error ? error.message : "Verify failed");
+                        }
+                      }}>Verify</button>
                       <button type="button" onClick={() => handleReceiverAction(r.id, "start")}>
                         Start
                       </button>
@@ -443,10 +754,13 @@ export function ApplianceDrawer({
                             label: r.label,
                             driver: r.driver,
                             serial: r.serial,
-                            centerFrequencyHz: r.centerFrequencyHz ?? 851012500,
+                            centerFrequencyHz: r.centerFrequencyHz ?? 154_000_000,
                             sampleRateHz: r.sampleRateHz ?? 2400000,
                             gainDb: r.gainDb ?? 40,
                             ppm: r.ppm,
+                            enabled: r.enabled ?? true,
+                            role: r.role ?? "general",
+                            soapyIndex: r.soapyIndex ?? 0,
                           });
                         }}
                       >
@@ -475,24 +789,26 @@ export function ApplianceDrawer({
                             />
                           </label>
                           <label>
-                            Device Serial / Args
+                            Soapy device args
                             <input
                               type="text"
+                              placeholder="driver=sdrplay"
                               value={receiverDraft.serial}
                               onChange={(e) =>
                                 setReceiverDraft({ ...receiverDraft, serial: e.target.value })
                               }
                             />
+                            <small className="pane-desc">Auto-filled from driver. Remote node: driver=remote,remote=192.168.1.50</small>
                           </label>
                           <label>
-                            Center Frequency (Hz)
-                            <input
-                              type="number"
-                              value={receiverDraft.centerFrequencyHz}
-                              onChange={(e) =>
+                            Center Frequency (MHz)
+                            <MhzField
+                              valueHz={receiverDraft.centerFrequencyHz}
+                              placeholder="851.0125"
+                              onChange={(centerFrequencyHz) =>
                                 setReceiverDraft({
                                   ...receiverDraft,
-                                  centerFrequencyHz: Number(e.target.value),
+                                  centerFrequencyHz,
                                 })
                               }
                             />
@@ -569,13 +885,12 @@ export function ApplianceDrawer({
                             setEditingScanList({ ...editingScanList, channels: updated });
                           }}
                         />
-                        <input
-                          type="number"
-                          value={chan.frequencyHz}
-                          placeholder="Frequency (Hz)"
-                          onChange={(e) => {
+                        <MhzField
+                          valueHz={chan.frequencyHz}
+                          placeholder="155.5500"
+                          onChange={(frequencyHz) => {
                             const updated = [...editingScanList.channels];
-                            updated[idx].frequencyHz = Number(e.target.value);
+                            updated[idx].frequencyHz = frequencyHz;
                             setEditingScanList({ ...editingScanList, channels: updated });
                           }}
                         />
@@ -672,8 +987,30 @@ export function ApplianceDrawer({
                     <div className="box-header">
                       <strong>{sys.name}</strong>
                       <span>Protocol: {sys.protocol}</span>
-                      <span>Control: {formatFrequency(sys.controlChannelHz)}</span>
-                      <span>NAC: ${sys.nac?.toString(16).toUpperCase() ?? "—"}</span>
+                      {sys.protocol === "p25" ? (
+                        <>
+                          <span>Control: {formatFrequency(sys.controlChannelHz)}</span>
+                          <span>NAC: {sys.nac != null ? sys.nac.toString(16).toUpperCase() : "—"}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Freq: {formatFrequency(sys.frequencyHz)}</span>
+                          <span>PL Tone: {sys.tone ?? "CSQ"}</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="btn-row">
+                      <button type="button" onClick={() => setSystemDraft(sys)}>Edit</button>
+                      <button type="button" className="danger-btn" onClick={async () => {
+                        if (!window.confirm(`Delete system ${sys.name}?`)) return;
+                        try {
+                          await deleteSystem(sys.id);
+                          setSystems((items) => items.filter((item) => item.id !== sys.id));
+                          setStatusMessage(`Deleted ${sys.name}`);
+                        } catch (error) {
+                          setStatusMessage(error instanceof Error ? error.message : "Delete failed");
+                        }
+                      }}>Delete</button>
                     </div>
                   </div>
                 ))}
@@ -694,40 +1031,81 @@ export function ApplianceDrawer({
                     Protocol
                     <select
                       value={systemDraft.protocol}
-                      onChange={(e) => setSystemDraft({ ...systemDraft, protocol: e.target.value })}
+                      onChange={(e) => {
+                        const protocol = e.target.value;
+                        setSystemDraft((draft) => ({
+                          ...draft,
+                          protocol,
+                          modulation: protocol === "analog-fm" ? draft.modulation ?? "NFM" : draft.modulation,
+                          bandwidthHz: protocol === "analog-fm" ? draft.bandwidthHz ?? 12500 : draft.bandwidthHz,
+                          controlChannelHz: protocol === "p25" ? draft.controlChannelHz ?? 851012500 : draft.controlChannelHz,
+                        }));
+                      }}
                     >
                       <option value="p25">P25 Phase 1/2 Trunked</option>
                       <option value="analog-fm">Analog FM Conventional</option>
                     </select>
                   </label>
-                  <label>
-                    Control Channel (Hz)
-                    <input
-                      type="number"
-                      value={systemDraft.controlChannelHz ?? ""}
-                      onChange={(e) =>
-                        setSystemDraft({ ...systemDraft, controlChannelHz: Number(e.target.value) })
-                      }
-                    />
-                  </label>
-                  <label>
-                    NAC (Hex/Decimal)
-                    <input
-                      type="number"
-                      value={systemDraft.nac ?? ""}
-                      onChange={(e) =>
-                        setSystemDraft({ ...systemDraft, nac: Number(e.target.value) })
-                      }
-                    />
-                  </label>
-                  {systemDraft.protocol === "analog-fm" && (
+                  {systemDraft.protocol === "p25" ? (
                     <>
-                      <label>Frequency (Hz)<input type="number" value={systemDraft.frequencyHz ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, frequencyHz: Number(e.target.value) })} /></label>
-                      <label>Bandwidth (Hz)<input type="number" value={systemDraft.bandwidthHz ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, bandwidthHz: Number(e.target.value) })} /></label>
-                      <label>Squelch (dB)<input type="number" value={systemDraft.squelchDb ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, squelchDb: Number(e.target.value) })} /></label>
-                      <label>Tone<input value={systemDraft.tone ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, tone: e.target.value })} /></label>
+                      <label>
+                        Control Channel (MHz)
+                        <MhzField
+                          valueHz={systemDraft.controlChannelHz}
+                          placeholder="851.0125"
+                          onChange={(controlChannelHz) =>
+                            setSystemDraft({ ...systemDraft, controlChannelHz })
+                          }
+                        />
+                      </label>
+                      <label>
+                        NAC (hex)
+                        <input
+                          type="text"
+                          placeholder="e.g. 293 or B0C"
+                          value={systemDraft.nac != null ? systemDraft.nac.toString(16).toUpperCase() : ""}
+                          onChange={(e) =>
+                            setSystemDraft({ ...systemDraft, nac: parseNacHex(e.target.value) })
+                          }
+                        />
+                        <small className="pane-desc">P25 network access code, 3 hex digits (000–FFF)</small>
+                      </label>
                     </>
-                  )}
+                  ) : (
+                    <>
+                      <label>Frequency (MHz)<MhzField valueHz={systemDraft.frequencyHz} placeholder="154.445" onChange={(frequencyHz) => setSystemDraft({ ...systemDraft, frequencyHz })} /></label>
+                      <label>Bandwidth (MHz)<MhzField valueHz={systemDraft.bandwidthHz} placeholder="0.0125" onChange={(bandwidthHz) => setSystemDraft({ ...systemDraft, bandwidthHz })} /><small className="pane-desc">NFM 0.0125 · FM 0.025 · narrow 0.00625</small></label>
+                      <label>Modulation
+                        <select value={systemDraft.modulation ?? "NFM"} onChange={(e) => setSystemDraft({ ...systemDraft, modulation: e.target.value })}>
+                          <option value="NFM">NFM (12.5 kHz)</option>
+                          <option value="FM">FM (25 kHz)</option>
+                        </select>
+                      </label>
+                      <label>Squelch (dB)<input type="number" value={systemDraft.squelchDb ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, squelchDb: Number(e.target.value) })} /></label>
+                      <label>
+                        PL Tone (CTCSS/DCS)
+                        <input value={systemDraft.tone ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, tone: e.target.value })} placeholder="123.0 or D023N" />
+                        <small className="pane-desc">Squelch tone; leave blank for carrier squelch. Not two-tone dispatch.</small>
+                      </label>
+                     </>
+                   )}
+                  <label>
+                    Assigned receiver
+                    <select
+                      value={systemDraft.receiverId ?? ""}
+                      onChange={(e) =>
+                        setSystemDraft({
+                          ...systemDraft,
+                          receiverId: e.target.value || undefined,
+                        })
+                      }
+                    >
+                      <option value="">Default (first enabled)</option>
+                      {snapshot.receivers.map((receiver) => (
+                        <option key={receiver.id} value={receiver.id}>{receiver.label}</option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
                 <button type="button" className="primary-btn" onClick={handleSaveSystem}>
                   Save System Profile
@@ -775,6 +1153,12 @@ export function ApplianceDrawer({
           {activeTab === "integrations" && settings && (
             <div className="tab-pane">
               <h3>AI & Integrations</h3>
+              <div className="config-box">
+                <span>Transcription: {integrationStatus.transcribe?.configured ? "configured" : "not configured"}</span>
+                <span>Summary: {integrationStatus.summary?.configured ? "configured" : "not configured"}</span>
+                <span>Geocoder: {integrationStatus.geocoder?.configured ? "configured" : "not configured"}</span>
+                <span>Discord: {integrationStatus.discord?.configured ? "configured" : "not configured"}</span>
+              </div>
               <div className="config-section">
                 <h4>Map center</h4>
                 <div className="form-grid">
@@ -788,32 +1172,52 @@ export function ApplianceDrawer({
                 <div className="form-grid">
                   <label className="checkbox-label"><input type="checkbox" checked={settings.aiEnabled} onChange={(e) => setSettings({ ...settings, aiEnabled: e.target.checked })} /> Enable AI</label>
                   <label>Stack preset
-                    <select onChange={(e) => { const preset = AI_STACK_PRESETS[e.target.value]; if (preset) setSettings({ ...settings, ...preset }); }}>
+                    <select onChange={(e) => {
+                      const preset = AI_STACK_PRESETS[e.target.value];
+                      if (preset) setSettings({ ...settings, ...preset });
+                    }}>
                       <option value="">Choose preset…</option>
                       <option value="local-gpu">Local GPU</option>
                       <option value="cloud-hybrid">Cloud hybrid</option>
                       <option value="privacy-max">Privacy max</option>
                     </select>
                   </label>
-                  <label>ASR profile
-                    <select value={settings.aiProfile} onChange={(e) => setSettings({ ...settings, aiProfile: e.target.value })}>
-                      <option value="cpu-faster-whisper-small">CPU · faster-whisper small</option>
-                      <option value="cpu-whispercpp">CPU · whisper.cpp</option>
-                      <option value="gpu-faster-whisper">NVIDIA GPU · faster-whisper</option>
-                      <option value="gpu-parakeet">NVIDIA GPU · Parakeet</option>
-                      <option value="gpu-qwen3">GPU · Qwen3-ASR</option>
-                      <option value="experimental-radio">Experimental · radio-tuned Qwen3</option>
-                    </select>
-                  </label>
                   <label>Transcribe provider<input value={settings.transcribeProvider ?? "openai-compatible"} onChange={(e) => setSettings({ ...settings, transcribeProvider: e.target.value })} /></label>
                   <label>Transcribe URL<input value={settings.transcribeUrl} onChange={(e) => setSettings({ ...settings, transcribeUrl: e.target.value })} /></label>
                   <label>Transcribe API key<input type="password" value={settings.transcribeApiKey ?? ""} onChange={(e) => setSettings({ ...settings, transcribeApiKey: e.target.value })} /></label>
-                  <label>Transcribe model<input value={settings.transcribeModel} onChange={(e) => setSettings({ ...settings, transcribeModel: e.target.value })} /></label>
+                  <IntegrationModelField
+                    label="Transcribe model"
+                    kind="transcribe"
+                    value={settings.transcribeModel}
+                    models={transcribeModels}
+                    loading={transcribeModelsLoading}
+                    error={transcribeModelsError}
+                    source={transcribeModelSource}
+                    onRefresh={() => void refreshTranscribeModels()}
+                    onChange={(transcribeModel) =>
+                      setSettings({
+                        ...settings,
+                        transcribeModel,
+                        aiProfile: deriveAiProfile(transcribeModel),
+                      })
+                    }
+                  />
+                  <p className="pane-desc">ASR profile (auto): {settings.aiProfile}</p>
                   <label className="checkbox-label"><input type="checkbox" checked={settings.vadEnabled} onChange={(e) => setSettings({ ...settings, vadEnabled: e.target.checked })} /> VAD enabled</label>
                   <label>Summary provider<input value={settings.summaryProvider ?? "ollama"} onChange={(e) => setSettings({ ...settings, summaryProvider: e.target.value })} /></label>
                   <label>Summary URL<input value={settings.summaryUrl ?? ""} onChange={(e) => setSettings({ ...settings, summaryUrl: e.target.value })} /></label>
                   <label>Summary API key<input type="password" value={settings.summaryApiKey ?? ""} onChange={(e) => setSettings({ ...settings, summaryApiKey: e.target.value })} /></label>
-                  <label>Summary model<input value={settings.summaryModel} onChange={(e) => setSettings({ ...settings, summaryModel: e.target.value })} /></label>
+                  <IntegrationModelField
+                    label="Summary model"
+                    kind="summary"
+                    value={settings.summaryModel}
+                    models={summaryModels}
+                    loading={summaryModelsLoading}
+                    error={summaryModelsError}
+                    source={summaryModelSource}
+                    onRefresh={() => void refreshSummaryModels()}
+                    onChange={(summaryModel) => setSettings({ ...settings, summaryModel })}
+                  />
                   <label>Summary refresh (min)<input type="number" value={settings.summaryRefreshMinutes ?? 15} onChange={(e) => setSettings({ ...settings, summaryRefreshMinutes: Number(e.target.value) })} /></label>
                 </div>
                 <div className="btn-row">
@@ -888,8 +1292,8 @@ export function ApplianceDrawer({
           {activeTab === "diagnostics" && (
             <div className="tab-pane">
               <h3>Runtime Diagnostics</h3>
-              {runtime && <div className="config-box"><span>Receivers: {runtime.receiverCount}</span><span>Decoder: {runtime.decoderConnected ? "connected" : "offline"}</span><span>AI: {runtime.aiWorkerStatus ?? "unknown"}</span><span>Queue backlog: {runtime.queueBacklog ?? 0}</span></div>}
-              {diagnostics && <div className="config-box"><span>Capture: {diagnostics.capture.state}</span><span>Recording: {diagnostics.recording.state}</span><span>Ingestion: {diagnostics.ingestion.state}</span><span>Image: {diagnostics.imageVersion ?? "unknown"}</span></div>}
+              {runtime && <div className="config-box"><span>Receivers: {runtime.receiverCount}</span><span>Decoder: {runtime.decoderConnected ? "connected" : "offline"}</span><span>AI: {runtime.aiWorkerStatus ?? "unknown"}</span><span>Queue backlog: {runtime.queueBacklog ?? 0}</span><span>Storage: {runtime.storagePath ?? "unknown"}</span><span>Persistence: {runtime.persistenceConnected ? "connected" : "file fallback"}</span><span>Active scan list: {runtime.activeScanList ?? "none"}</span></div>}
+              {diagnostics && <div className="config-box"><span>Capture: {diagnostics.capture.state} — {diagnostics.capture.detail}</span><span>Decoder: {diagnostics.decoder.state} — {diagnostics.decoder.detail}</span><span>Recording: {diagnostics.recording.state}</span><span>Ingestion: {diagnostics.ingestion.state}</span><span>AI: {diagnostics.ai.state} — {diagnostics.ai.detail}</span><span>Image: {diagnostics.imageVersion ?? "unknown"}</span><span>Config hash: {diagnostics.configHash ?? "—"}</span><span>Process ID: {diagnostics.processId ?? "—"}</span><span>Decoder heartbeat age: {diagnostics.decoderHeartbeatAgeSeconds ?? "—"}s</span><span>Control lock age: {diagnostics.decoderControlLockAgeSeconds ?? "—"}s</span>{diagnostics.failureReason && <span>Failure: {diagnostics.failureReason}</span>}{diagnostics.aiFailureReason && <span>AI failure: {diagnostics.aiFailureReason}</span>}{diagnostics.simulated && <span className="live-tag">SIMULATED</span>}</div>}
               <h4>Decoder config preview</h4>
               <pre className="decoder-config-preview">{decoderConfig || "Decoder config unavailable"}</pre>
             </div>

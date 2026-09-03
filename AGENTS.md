@@ -16,7 +16,7 @@ Supported targets:
 
 ## Architecture
 
-- `apps/control-plane`: Rust API, persistence, receiver lifecycle, decoder event ingestion, audio safety, AI processing, operations summaries, auth, diagnostics, imports, and WebSocket/event state.
+- `apps/control-plane`: Rust API, persistence, receiver lifecycle, decoder event ingestion, audio safety, AI processing, operations summaries, auth, diagnostics, imports, provider model discovery, and WebSocket/event state.
 - `apps/web`: React/Vite responsive operator console and mobile UI.
 - `native/radiod`: native SDR capture boundary and simulator contract.
 - `crates/domain`: shared radio, call, policy, settings, and conversation types.
@@ -43,10 +43,16 @@ Supported targets:
 ### Runtime and receiver
 
 - Persisted settings drive mode, device arguments, frequency, sample rate, bandwidth, gain, AGC, and PPM.
+- **Multi-SDR:** multiple local USB devices (Soapy indices) and remote SoapyRemote nodes; see `docs/receivers.md`.
+- Receivers carry `enabled`, `role`, `soapyIndex`, and driver presets (`apps/control-plane/src/receiver_presets.rs`).
+- `GET /api/v1/receivers/discover` lists local Soapy devices for the UI.
+- `SystemProfile.receiverId` assigns P25/analog systems to a receiver; multi-receiver installs emit multiple Trunk Recorder `sources[]` entries (`decoder_config_value` in `api.rs`).
 - Receiver states and diagnostics distinguish RF capture, decoder, recording, ingestion, and AI status.
-- Receiver lifecycle operations include probe, start, stop, restart, and reconnect behavior.
+- Receiver lifecycle operations include probe, start, stop, restart, reconnect, capabilities, and verify.
 - Remote Soapy endpoints are parsed and probed explicitly.
 - RSP1B defaults are capability-oriented rather than one hard-coded gain value.
+- Appliance image installs Soapy modules for RTL-SDR, Airspy, and remote; SDRplay uses the vendor runtime mount.
+- **Deferred:** per-receiver `radiod` workers with health attribution (single capture path today).
 
 ### Radio and decoding
 
@@ -64,8 +70,14 @@ Supported targets:
 - Call state flows through detection, recording, finalization, archive, transcription, and summary processing.
 - Conversation sessions merge rapid back-and-forth traffic.
 - Operations summaries support 1h, 4h, and 12h windows, grouped by site and channel plan.
-- AI narrative summaries use the configured Ollama/Summary provider and report provider failure instead of pretending fallback text is AI-generated.
-- Supported AI profiles include CPU, CUDA/GPU, ROCm, radio-specialized, and experimental options.
+- AI narrative summaries use the configured Ollama/summary provider and report provider failure instead of pretending fallback text is AI-generated.
+- **Transcription and summary models are discovered from the configured endpoint**, not chosen from a static ASR profile list:
+  - `GET` or `POST /api/v1/integrations/transcribe/models` — queries `{origin}/v1/models` (OpenAI-compatible catalog).
+  - `GET` or `POST /api/v1/integrations/summary/models` — queries Ollama `{origin}/api/tags` when `summaryProvider` is `ollama` or the URL contains `/api/generate`; otherwise OpenAI `/v1/models`.
+  - POST accepts draft URL/provider/API key overrides so the UI can discover **before** settings are saved.
+  - Implementation: `apps/control-plane/src/providers.rs`; selection heuristics: `apps/web/src/integrationModels.ts`.
+- `aiProfile` is **derived** from the selected transcribe model name (e.g. Qwen3-ASR → `gpu-qwen3`, radio-tuned Qwen → `experimental-radio`) and stored for diagnostics; operators do not pick it manually.
+- Compatible ASR backends: any OpenAI-compatible `POST /v1/audio/transcriptions` server (Speaches, vLLM with `vllm[audio]`, Groq, OpenAI). Qwen3-ASR requires vLLM or similar — not Speaches/Whisper-only stacks.
 - Discord notification support exists through a configured webhook.
 
 ### UI
@@ -77,6 +89,9 @@ Supported targets:
 - Operations brief uses 1h/4h/12h tabs and configurable refresh interval (default 15 minutes).
 - Map center defaults to Spaulding Rd / Old Hwy 54, Pittsville, Wisconsin, while persisted home settings win.
 - Error boundaries and route-level loading/error states are present.
+- **Appliance drawer** (`ApplianceDrawer.tsx`): receivers (discover/probe/verify), systems with receiver assignment, integrations with endpoint-based model pickers (`IntegrationModelField.tsx`), policy, security, diagnostics.
+- **Integrations tab:** stack presets seed URLs; transcribe/summary models auto-discover on URL change (debounced) with manual override fallback; derived ASR profile shown read-only.
+- **First-run wizard** uses the same model discovery flow as the integrations tab.
 
 ### Deployment and authentication
 
@@ -99,7 +114,8 @@ The tested Unraid appliance is on the local network at `192.168.1.4:18088`.
 - Control channels are 152.1125 MHz and 152.2175 MHz.
 - Trunk Recorder has identified system ID `B0C` and NAC `B00` on the physical receiver.
 - Jackson County FM test channels are configured at 154.445 MHz / 123.0 PL and 151.0625 MHz / 82.5 PL.
-- Ollama is on the Compose network with `llama3.2:3b` installed.
+- Ollama summary on the appliance LAN (`192.168.1.4:11434`) is healthy with `qwen3.5:9b-q4_K_M` installed.
+- Transcription may target a **separate** LAN host (e.g. vLLM on a Windows PC with a 3060). Use the LAN IP in `transcribeUrl`, not `localhost`; confirm `GET {origin}/v1/models` responds from the appliance network before expecting transcripts.
 - Local-only mode is currently enabled on the tested appliance; keep the port restricted to the trusted LAN/VPN.
 
 Do not store passwords, tokens, private keys, or live credential files in this repository. Obtain them from the operator/environment when deployment work explicitly requires them.
@@ -141,6 +157,16 @@ Hardware acceptance should use `scripts/verified-hardware-acceptance.py` and the
 6. When testing live Unraid, report the exact observed state and distinguish hardware, simulated, unavailable, and stale-recording evidence.
 7. Update `docs/completion-status.md` only with evidence-backed status. Do not mark physical acceptance gates complete based on old recordings or software-only checks.
 8. Keep the five-call feed and AI operations brief behavior intact unless the operator explicitly changes that product decision.
+
+## Agent pointers (high-churn areas)
+
+| Area | Primary files |
+|------|----------------|
+| Multi-SDR / decoder sources | `apps/control-plane/src/api.rs`, `receiver_presets.rs`, `docs/receivers.md` |
+| AI provider + model discovery | `apps/control-plane/src/providers.rs`, `apps/web/src/integrationModels.ts`, `IntegrationModelField.tsx` |
+| Integrations UI | `apps/web/src/components/ApplianceDrawer.tsx`, `FirstRunWizard.tsx` |
+| Settings persistence | `apps/control-plane/src/state.rs`, `apps/web/src/api.ts` |
+| AI operator docs | `docs/ai-providers.md` |
 
 ## GitHub
 

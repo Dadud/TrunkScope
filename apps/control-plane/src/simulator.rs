@@ -21,6 +21,9 @@ pub fn spawn(state: Arc<AppState>) {
         sample_rate_hz: Some(2_400_000),
         gain_db: Some(28.0),
         ppm: 0.0,
+        enabled: true,
+        role: trunkscope_domain::ReceiverRole::General,
+        soapy_index: Some(0),
         capabilities: ReceiverCapabilities {
             minimum_frequency_hz: 24_000_000,
             maximum_frequency_hz: 1_766_000_000,

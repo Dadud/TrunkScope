@@ -234,6 +234,7 @@ pub fn parse_systems_csv(csv: &str) -> Vec<SystemProfile> {
             step_hz: None,
             dwell_ms: None,
             sites: Vec::new(),
+            receiver_id: None,
         });
     }
     systems

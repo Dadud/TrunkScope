@@ -3,13 +3,24 @@ export type ReceiverState = "offline" | "probing" | "ready" | "idle" | "monitori
 export interface Receiver {
   id: string;
   label: string;
-  driver: "rtlSdr" | "airspy" | "sdrplay" | "simulator";
+  driver: "rtlSdr" | "airspy" | "sdrplay" | "hackRf" | "plutoSdr" | "bladeRf" | "limeSdr" | "genericSoapy" | "simulator";
   serial: string;
   state: ReceiverState;
   centerFrequencyHz?: number;
   sampleRateHz?: number;
   gainDb?: number;
   ppm: number;
+  enabled?: boolean;
+  role?: "general" | "p25" | "analog";
+  soapyIndex?: number;
+  capabilities?: {
+    minimumFrequencyHz: number;
+    maximumFrequencyHz: number;
+    sampleRatesHz: number[];
+    maximumBandwidthHz: number;
+    supportsAgc: boolean;
+    gainElements: string[];
+  };
   health: {
     signalDbfs: number;
     noiseDbfs: number;

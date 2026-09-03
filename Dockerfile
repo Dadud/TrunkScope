@@ -40,6 +40,7 @@ FROM robotastic/trunk-recorder:latest AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends supervisor \
+        soapysdr-tools soapysdr-module-rtlsdr soapysdr-module-airspy soapysdr-module-remote \
     && rm -rf /var/lib/apt/lists/* \
     && install -d /var/lib/trunkscope/audio /var/lib/trunkscope/calls \
        /usr/share/trunkscope/web /config /etc/supervisor/conf.d

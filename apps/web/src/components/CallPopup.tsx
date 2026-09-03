@@ -75,6 +75,18 @@ export function CallPopup({ call, volume, isAdmin, onLocationUpdated, onOpenTalk
           <span className="label">DURATION</span>
           <span className="val">{formatElapsed(call.startedAt, call.endedAt)}</span>
         </div>
+        {call.sourceRadioId != null && (
+          <div className="meta-item">
+            <span className="label">RADIO ID</span>
+            <span className="val">{call.sourceRadioId}</span>
+          </div>
+        )}
+        {call.tdmaSlot != null && (
+          <div className="meta-item">
+            <span className="label">TDMA SLOT</span>
+            <span className="val">{call.tdmaSlot}</span>
+          </div>
+        )}
       </div>
 
       {hasAudio ? (

@@ -10,12 +10,12 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 use trunkscope_domain::{
-    AudioAsset, Call, CallEvent, CallState, EncryptionState, Receiver, ReceiverCapabilities,
-    ReceiverDriver, ReceiverHealth, ReceiverState,
+    AudioAsset, Call, CallEvent, CallState, EncryptionState, Receiver,
+    ReceiverDriver, ReceiverHealth, ReceiverRole, ReceiverState,
 };
 use uuid::Uuid;
 
-use crate::state::{AppState, ReceiverCommand};
+use crate::{receiver_presets, state::{AppState, ReceiverCommand}};
 
 #[derive(Clone)]
 struct RadioConfig {
@@ -224,13 +224,7 @@ pub fn spawn(state: Arc<AppState>) -> Result<()> {
 }
 
 fn initial_receiver(id: Uuid, config: &RadioConfig) -> Receiver {
-    let driver = if config.device.contains("sdrplay") {
-        ReceiverDriver::Sdrplay
-    } else if config.device.contains("airspy") {
-        ReceiverDriver::Airspy
-    } else {
-        ReceiverDriver::RtlSdr
-    };
+    let driver = receiver_presets::infer_driver_from_device(&config.device);
     Receiver {
         id,
         label: if driver == ReceiverDriver::Sdrplay {
@@ -245,14 +239,10 @@ fn initial_receiver(id: Uuid, config: &RadioConfig) -> Receiver {
         sample_rate_hz: Some(config.sample_rate_hz),
         gain_db: config.gain_db,
         ppm: config.ppm,
-        capabilities: ReceiverCapabilities {
-            minimum_frequency_hz: 1_000,
-            maximum_frequency_hz: 2_000_000_000,
-            sample_rates_hz: vec![2_000_000, 2_400_000, 6_000_000, 8_000_000],
-            maximum_bandwidth_hz: 8_000_000,
-            supports_agc: true,
-            gain_elements: vec!["IFGR".into(), "RFGR".into()],
-        },
+        enabled: true,
+        role: ReceiverRole::General,
+        soapy_index: Some(0),
+        capabilities: receiver_presets::default_capabilities(driver),
         health: ReceiverHealth {
             signal_dbfs: -200.0,
             noise_dbfs: -200.0,

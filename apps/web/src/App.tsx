@@ -9,6 +9,7 @@ import {
   getSnapshot,
   login,
   logout,
+  saveSettings,
   setupAdmin,
   subscribeToCalls,
   type AppSettings,
@@ -242,7 +243,14 @@ export default function App() {
         <FirstRunWizard
           settings={settings}
           onComplete={(saved) => setSettings(saved)}
-          onDismiss={() => setSettings({ ...settings, wizardCompleted: true })}
+          onDismiss={async () => {
+            try {
+              const saved = await saveSettings({ ...settings, wizardCompleted: true });
+              setSettings(saved);
+            } catch {
+              setSettings({ ...settings, wizardCompleted: true });
+            }
+          }}
         />
       )}
       {/* Top Header Controls */}

@@ -7,6 +7,7 @@ mod persistence;
 mod processor;
 mod providers;
 mod radiod;
+mod receiver_presets;
 mod retention;
 mod scanner;
 mod simulator;
@@ -88,6 +89,9 @@ async fn main() -> Result<()> {
                 sample_rate_hz: Some(settings.radio_sample_rate_hz),
                 gain_db: settings.radio_gain_db,
                 ppm: settings.radio_ppm,
+                enabled: true,
+                role: trunkscope_domain::ReceiverRole::General,
+                soapy_index: Some(0),
                 capabilities: ReceiverCapabilities {
                     minimum_frequency_hz: 1_000_000,
                     maximum_frequency_hz: 2_000_000_000,

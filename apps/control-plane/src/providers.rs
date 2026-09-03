@@ -393,6 +393,152 @@ fn urlencoding_hint(hint: &str) -> String {
     hint.replace(' ', "%20")
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredModels {
+    pub models: Vec<String>,
+    pub source: String,
+    pub catalog_url: String,
+}
+
+pub fn service_origin(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let scheme_end = trimmed.find("://")?;
+    let after_scheme = &trimmed[scheme_end + 3..];
+    let path_start = after_scheme.find('/').unwrap_or(after_scheme.len());
+    let origin = &trimmed[..scheme_end + 3 + path_start];
+    if origin.ends_with("://") {
+        None
+    } else {
+        Some(origin.to_string())
+    }
+}
+
+pub fn openai_models_catalog_url(configured_url: &str) -> Option<String> {
+    service_origin(configured_url).map(|origin| format!("{origin}/v1/models"))
+}
+
+pub fn ollama_tags_catalog_url(configured_url: &str) -> Option<String> {
+    service_origin(configured_url).map(|origin| format!("{origin}/api/tags"))
+}
+
+fn is_ollama_summary(settings: &AppSettings) -> bool {
+    settings.summary_provider.trim() == "ollama"
+        || settings
+            .effective_summary_url()
+            .is_some_and(|url| url.contains("/api/generate"))
+}
+
+fn parse_openai_models(payload: &serde_json::Value) -> Vec<String> {
+    payload
+        .get("data")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(|id| id.as_str()))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_ollama_models(payload: &serde_json::Value) -> Vec<String> {
+    payload
+        .get("models")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("name").and_then(|name| name.as_str()))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+async fn fetch_model_catalog(
+    client: &Client,
+    catalog_url: &str,
+    api_key: &str,
+    source: &str,
+) -> Result<DiscoveredModels, String> {
+    let creds = ProviderCredentials::from_settings(api_key);
+    let response = creds
+        .apply(client.get(catalog_url))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "model catalog returned {}",
+            response.status()
+        ));
+    }
+    let payload = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|error| error.to_string())?;
+    let models = if source == "ollama" {
+        parse_ollama_models(&payload)
+    } else {
+        parse_openai_models(&payload)
+    };
+    if models.is_empty() {
+        return Err("provider returned no models".into());
+    }
+    Ok(DiscoveredModels {
+        models,
+        source: source.to_string(),
+        catalog_url: catalog_url.to_string(),
+    })
+}
+
+pub async fn list_transcribe_models(settings: &AppSettings) -> Result<DiscoveredModels, String> {
+    let configured = effective_transcribe_url(settings)
+        .ok_or_else(|| "transcription URL is not configured".to_string())?;
+    let catalog_url = openai_models_catalog_url(&configured)
+        .ok_or_else(|| "transcription URL is invalid".to_string())?;
+    let client = http_client();
+    fetch_model_catalog(
+        &client,
+        &catalog_url,
+        &effective_transcribe_api_key(settings),
+        "openai-compatible",
+    )
+    .await
+}
+
+pub async fn list_summary_models(settings: &AppSettings) -> Result<DiscoveredModels, String> {
+    let configured = settings
+        .effective_summary_url()
+        .ok_or_else(|| "summary URL is not configured".to_string())?;
+    let client = http_client();
+    if is_ollama_summary(settings) {
+        let catalog_url = ollama_tags_catalog_url(&configured)
+            .ok_or_else(|| "summary URL is invalid".to_string())?;
+        return fetch_model_catalog(
+            &client,
+            &catalog_url,
+            &effective_summary_api_key(settings),
+            "ollama",
+        )
+        .await;
+    }
+    let catalog_url = openai_models_catalog_url(&configured)
+        .ok_or_else(|| "summary URL is invalid".to_string())?;
+    fetch_model_catalog(
+        &client,
+        &catalog_url,
+        &effective_summary_api_key(settings),
+        "openai-compatible",
+    )
+    .await
+}
+
 pub async fn test_transcribe(settings: &AppSettings) -> Result<(), String> {
     if effective_transcribe_url(settings).is_none() {
         return Err("transcription URL is not configured".into());
@@ -497,5 +643,32 @@ mod tests {
     fn detects_two_tone_language() {
         assert!(detect_two_tone_dispatch("Station 3 was toned out for a medical."));
         assert!(!detect_two_tone_dispatch("Routine traffic stop."));
+    }
+
+    #[test]
+    fn derives_openai_models_catalog_from_transcribe_url() {
+        assert_eq!(
+            openai_models_catalog_url("http://192.168.1.105:8000/v1/audio/transcriptions").as_deref(),
+            Some("http://192.168.1.105:8000/v1/models")
+        );
+    }
+
+    #[test]
+    fn derives_ollama_tags_catalog_from_generate_url() {
+        assert_eq!(
+            ollama_tags_catalog_url("http://192.168.1.4:11434/api/generate").as_deref(),
+            Some("http://192.168.1.4:11434/api/tags")
+        );
+    }
+
+    #[test]
+    fn parses_openai_and_ollama_catalog_payloads() {
+        let openai = serde_json::json!({"data":[{"id":"Qwen/Qwen3-ASR-1.7B"}]});
+        assert_eq!(
+            parse_openai_models(&openai),
+            vec!["Qwen/Qwen3-ASR-1.7B".to_string()]
+        );
+        let ollama = serde_json::json!({"models":[{"name":"llama3.2:3b"}]});
+        assert_eq!(parse_ollama_models(&ollama), vec!["llama3.2:3b".to_string()]);
     }
 }

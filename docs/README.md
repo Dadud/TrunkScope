@@ -8,6 +8,7 @@ TrunkScope is a self-hosted, receive-only SDR scanner appliance. One Docker cont
 |----------|----------|----------|
 | [Installation](installation.md) | Operators | Single-container deploy, Unraid, USB SDR, first-run wizard |
 | [Configuration](configuration.md) | Operators | Settings, environment variables, radio profiles, auth |
+| [Receivers](receivers.md) | Operators | Multi-SDR, USB indices, SoapyRemote nodes, system assignment |
 | [AI providers](ai-providers.md) | Operators | Speaches, Ollama, vLLM, cloud APIs, test buttons |
 | [Operations](operations.md) | Operators | Health, backup, retention, scan lists, acceptance harness |
 | [Imports](imports.md) | Operators | RadioReference CSV (talkgroups, sites, systems) |

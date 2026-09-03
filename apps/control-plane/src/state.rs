@@ -35,6 +35,9 @@ pub struct SystemProfile {
     pub dwell_ms: Option<u32>,
     #[serde(default)]
     pub sites: Vec<SystemSite>,
+    /// When set, Trunk Recorder sources are tuned from systems assigned to this receiver.
+    #[serde(default)]
+    pub receiver_id: Option<uuid::Uuid>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

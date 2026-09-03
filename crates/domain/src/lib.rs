@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+fn default_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Receiver {
@@ -15,8 +19,23 @@ pub struct Receiver {
     pub sample_rate_hz: Option<u32>,
     pub gain_db: Option<f32>,
     pub ppm: f32,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub role: ReceiverRole,
+    #[serde(default)]
+    pub soapy_index: Option<u32>,
     pub capabilities: ReceiverCapabilities,
     pub health: ReceiverHealth,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ReceiverRole {
+    #[default]
+    General,
+    P25,
+    Analog,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,6 +44,11 @@ pub enum ReceiverDriver {
     RtlSdr,
     Airspy,
     Sdrplay,
+    HackRf,
+    PlutoSdr,
+    BladeRf,
+    LimeSdr,
+    GenericSoapy,
     Simulator,
 }
 

@@ -18,11 +18,14 @@ use tower_http::{
     trace::TraceLayer,
 };
 use trunkscope_domain::{
-    Call, PublicationPolicy, Receiver, ReceiverCapabilities, ReceiverDriver, ReceiverHealth,
-    ReceiverState, Talkgroup,
+    Call, PublicationPolicy, Receiver, ReceiverDriver, ReceiverHealth,
+    ReceiverRole, ReceiverState, Talkgroup,
 };
 
-use crate::state::{AppSettings, AppState, ScanList, SystemProfile};
+use crate::{
+    receiver_presets,
+    state::{AppSettings, AppState, ScanList, SystemProfile},
+};
 
 pub fn router(state: Arc<AppState>) -> Router {
     let mut app = Router::new()
@@ -47,6 +50,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/snapshot", get(snapshot))
         .route("/api/v1/receivers", get(receivers).post(create_receiver))
+        .route("/api/v1/receivers/presets", get(receiver_presets_list))
+        .route("/api/v1/receivers/discover", get(discover_receivers))
         .route(
             "/api/v1/receivers/{id}",
             put(update_receiver).delete(delete_receiver),
@@ -80,8 +85,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/integrations/discord/test", post(discord_test))
         .route("/api/v1/integrations/geocoder", get(geocoder_status))
         .route("/api/v1/integrations/transcribe", get(transcribe_status))
+        .route(
+            "/api/v1/integrations/transcribe/models",
+            get(transcribe_models).post(transcribe_models),
+        )
         .route("/api/v1/integrations/transcribe/test", post(transcribe_test))
         .route("/api/v1/integrations/summary", get(summary_status))
+        .route(
+            "/api/v1/integrations/summary/models",
+            get(summary_models).post(summary_models),
+        )
         .route("/api/v1/integrations/summary/test", post(summary_test))
         .route("/api/v1/integrations/geocoder/test", post(geocoder_test))
         .route("/api/v1/imports/sites", post(import_sites))
@@ -430,6 +443,99 @@ async fn diagnostics(State(state): State<Arc<AppState>>) -> Json<DiagnosticsResp
     })
 }
 
+fn p25_control_channels(system: &SystemProfile, site_filter: Option<&str>) -> Vec<u64> {
+    let selected_sites: Vec<_> = system
+        .sites
+        .iter()
+        .filter(|site| {
+            site_filter
+                .is_none_or(|filter| site.name.to_ascii_lowercase().contains(filter))
+        })
+        .collect();
+    let site_channels = selected_sites
+        .iter()
+        .flat_map(|site| site.control_channels_hz.iter().copied())
+        .collect::<Vec<_>>();
+    if !site_channels.is_empty() {
+        site_channels
+    } else if system.control_channels_hz.is_empty() {
+        system.control_channel_hz.into_iter().collect()
+    } else {
+        system.control_channels_hz.clone()
+    }
+}
+
+fn tuning_span(frequencies: &[u64]) -> (Option<u64>, Option<u64>) {
+    let requested_center = frequencies
+        .iter()
+        .min()
+        .zip(frequencies.iter().max())
+        .map(|(low, high)| (low + high) / 2);
+    let requested_span = frequencies
+        .iter()
+        .min()
+        .zip(frequencies.iter().max())
+        .map(|(low, high)| high.saturating_sub(*low).saturating_add(500_000));
+    (requested_center, requested_span)
+}
+
+fn systems_for_receiver<'a>(
+    receiver_id: uuid::Uuid,
+    default_receiver_id: Option<uuid::Uuid>,
+    systems: &'a [SystemProfile],
+) -> Vec<&'a SystemProfile> {
+    systems
+        .iter()
+        .filter(|system| {
+            system.receiver_id == Some(receiver_id)
+                || (system.receiver_id.is_none()
+                    && default_receiver_id == Some(receiver_id))
+        })
+        .collect()
+}
+
+fn build_decoder_source(
+    receiver: &Receiver,
+    settings: &AppSettings,
+    assigned: &[&SystemProfile],
+    site_filter: Option<&str>,
+    index: u32,
+) -> serde_json::Value {
+    let p25_controls: Vec<u64> = assigned
+        .iter()
+        .filter(|system| system.protocol == "p25")
+        .flat_map(|system| p25_control_channels(system, site_filter))
+        .collect();
+    let analog_frequencies: Vec<u64> = assigned
+        .iter()
+        .filter(|system| system.protocol == "analog-fm")
+        .filter_map(|system| system.frequency_hz)
+        .collect();
+    let all_tuning: Vec<u64> = p25_controls
+        .iter()
+        .copied()
+        .chain(analog_frequencies.iter().copied())
+        .collect();
+    let (requested_center, requested_span) = tuning_span(&all_tuning);
+    let has_p25 = assigned.iter().any(|system| system.protocol == "p25");
+    let has_analog = assigned.iter().any(|system| system.protocol == "analog-fm");
+    let gain = receiver
+        .gain_db
+        .or(settings.radio_gain_db)
+        .unwrap_or(40.0);
+    serde_json::json!({
+        "center": requested_center.unwrap_or(receiver.center_frequency_hz.unwrap_or(settings.radio_frequency_hz)),
+        "rate": requested_span.unwrap_or(0).max(if has_p25 { 6_000_000 } else { 0 }).max(receiver.sample_rate_hz.unwrap_or(settings.radio_sample_rate_hz) as u64),
+        "error": receiver.ppm,
+        "gain": gain,
+        "gainSettings": receiver_presets::default_gain_settings(receiver.driver, gain),
+        "digitalRecorders": if has_p25 { 4 } else { 0 },
+        "analogRecorders": if has_analog { 2 } else { 0 },
+        "driver": "osmosdr",
+        "device": receiver_presets::device_string(receiver, &settings.radio_device, index),
+    })
+}
+
 pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
     let settings = state
         .settings
@@ -439,102 +545,83 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
     let receivers = state.receivers.read().expect("receiver lock poisoned");
     let systems = state.systems.read().expect("system lock poisoned");
     let site_filter = settings.effective_site_filter();
-    let p25_controls: Vec<u64> = systems
-        .iter()
-        .filter(|system| system.protocol == "p25")
-        .flat_map(|system| {
-            let selected_sites: Vec<_> = system
-                .sites
-                .iter()
-                .filter(|site| {
-                    site_filter
-                        .as_ref()
-                        .is_none_or(|filter| site.name.to_ascii_lowercase().contains(filter))
-                })
-                .collect();
-            let site_channels = selected_sites
-                .iter()
-                .flat_map(|site| site.control_channels_hz.iter().copied())
-                .collect::<Vec<_>>();
-            if !site_channels.is_empty() {
-                site_channels
-            } else if system.control_channels_hz.is_empty() {
-                system.control_channel_hz.into_iter().collect::<Vec<_>>()
-            } else {
-                system.control_channels_hz.clone()
+    let enabled_receivers: Vec<_> = receivers.iter().filter(|receiver| receiver.enabled).cloned().collect();
+    let default_receiver_id = enabled_receivers.first().map(|receiver| receiver.id);
+    let mut sources: Vec<serde_json::Value> = Vec::new();
+    if enabled_receivers.is_empty() {
+        let all_p25: Vec<u64> = systems
+            .iter()
+            .filter(|system| system.protocol == "p25")
+            .flat_map(|system| p25_control_channels(system, site_filter.as_deref()))
+            .collect();
+        let all_analog: Vec<u64> = systems
+            .iter()
+            .filter(|system| system.protocol == "analog-fm")
+            .filter_map(|system| system.frequency_hz)
+            .collect();
+        let all_tuning: Vec<u64> = all_p25
+            .iter()
+            .copied()
+            .chain(all_analog.iter().copied())
+            .collect();
+        let (requested_center, requested_span) = tuning_span(&all_tuning);
+        let source_device = if settings.radio_device.contains("remote=")
+            || settings.radio_device.contains("soapy=")
+        {
+            settings.radio_device.clone()
+        } else if settings.radio_device.trim_start().starts_with("soapy=") {
+            settings.radio_device.clone()
+        } else {
+            format!("soapy=0,{}", settings.radio_device)
+        };
+        let gain = settings.radio_gain_db.unwrap_or(40.0);
+        sources.push(serde_json::json!({
+            "center": requested_center.unwrap_or(settings.radio_frequency_hz),
+            "rate": requested_span.unwrap_or(0).max(6_000_000).max(settings.radio_sample_rate_hz as u64),
+            "error": settings.radio_ppm,
+            "gain": gain,
+            "gainSettings": receiver_presets::default_gain_settings(ReceiverDriver::Sdrplay, gain),
+            "digitalRecorders": 4,
+            "analogRecorders": 2,
+            "driver": "osmosdr",
+            "device": source_device,
+        }));
+    } else if enabled_receivers.len() == 1 {
+        let receiver = &enabled_receivers[0];
+        sources.push(build_decoder_source(
+            receiver,
+            &settings,
+            &systems.iter().collect::<Vec<_>>(),
+            site_filter.as_deref(),
+            receiver.soapy_index.unwrap_or(0),
+        ));
+    } else {
+        for (index, receiver) in enabled_receivers.iter().enumerate() {
+            let assigned = systems_for_receiver(receiver.id, default_receiver_id, &systems);
+            if assigned.is_empty() {
+                continue;
             }
-        })
-        .collect();
-    let analog_frequencies: Vec<u64> = systems
-        .iter()
-        .filter(|system| system.protocol == "analog-fm")
-        .filter_map(|system| system.frequency_hz)
-        .collect();
-    let all_tuning_frequencies: Vec<u64> = p25_controls
-        .iter()
-        .copied()
-        .chain(analog_frequencies.iter().copied())
-        .collect();
-    let requested_center = all_tuning_frequencies
-        .iter()
-        .min()
-        .zip(all_tuning_frequencies.iter().max())
-        .map(|(low, high)| (low + high) / 2);
-    let requested_span = all_tuning_frequencies
-        .iter()
-        .min()
-        .zip(all_tuning_frequencies.iter().max())
-        .map(|(low, high)| high.saturating_sub(*low).saturating_add(500_000));
-    // In decoder mode the persisted appliance setting is authoritative for a
-    // remote SoapyRemote endpoint. Receiver inventory can contain only the
-    // discovered driver identity (for example `driver=sdrplay`), which must
-    // not overwrite the actual remote connection string on restart.
-    let source_device = if settings.radio_device.contains("remote=")
-        || settings.radio_device.contains("soapy=")
-    {
-        settings.radio_device.clone()
-    } else {
-        receivers
-            .first()
-            .map(|receiver| receiver.serial.clone())
-            .filter(|serial| !serial.trim().is_empty())
-            .unwrap_or_else(|| settings.radio_device.clone())
-    };
-    let source_device = if source_device.trim_start().starts_with("soapy=") {
-        source_device
-    } else {
-        format!("soapy=0,{}", source_device)
-    };
-    let source = receivers.first().map(|receiver| serde_json::json!({
-        "center": requested_center.unwrap_or(receiver.center_frequency_hz.unwrap_or(settings.radio_frequency_hz)),
-        // A trunked system can grant voice channels on either side of the
-        // control channel.  The RSP1B's 2.4 MHz mode clipped a live grant at
-        // 151.0475 MHz by a few kHz, so use its next supported 6 MHz rate
-        // whenever P25 is configured.  This keeps the entire 700/800 MHz
-        // or VHF system slice available for following.
-        "rate": requested_span.unwrap_or(0).max(6_000_000).max(receiver.sample_rate_hz.unwrap_or(settings.radio_sample_rate_hz) as u64),
-        "error": receiver.ppm,
-        // Trunk Recorder treats a zero gain as "unset" and emits a warning.
-        // The RSP1B exposes IFGR (20..59) and RFGR (0..9); these conservative
-        // midpoint values are overridden by a probed receiver profile when
-        // the operator has explicitly selected gain.
-        "gain": receiver.gain_db.unwrap_or(40.0),
-        "gainSettings": {"IFGR": 40, "RFGR": 4},
-        "digitalRecorders": 4,
-        "analogRecorders": 2,
-        "driver": "osmosdr",
-        "device": source_device,
-    })).unwrap_or_else(|| serde_json::json!({
-        "center": requested_center.unwrap_or(settings.radio_frequency_hz),
-        "rate": requested_span.unwrap_or(0).max(6_000_000).max(settings.radio_sample_rate_hz as u64),
-        "error": settings.radio_ppm,
-        "gain": settings.radio_gain_db.unwrap_or(40.0),
-        "gainSettings": {"IFGR": 40, "RFGR": 4},
-        "digitalRecorders": 4,
-        "analogRecorders": 2,
-        "driver": "osmosdr",
-        "device": source_device,
-    }));
+            sources.push(build_decoder_source(
+                receiver,
+                &settings,
+                &assigned,
+                site_filter.as_deref(),
+                receiver.soapy_index.unwrap_or(index as u32),
+            ));
+        }
+        if sources.is_empty() {
+            for (index, receiver) in enabled_receivers.iter().enumerate() {
+                sources.push(build_decoder_source(
+                    receiver,
+                    &settings,
+                    &systems.iter().collect::<Vec<_>>(),
+                    site_filter.as_deref(),
+                    receiver.soapy_index.unwrap_or(index as u32),
+                ));
+            }
+        }
+    }
+    drop(receivers);
     let imported_talkgroups = std::env::var("TRUNKSCOPE_CALLS_PATH")
         .map(|root| std::path::PathBuf::from(root).join("imported-talkgroups.csv"))
         .unwrap_or_else(|_| {
@@ -562,17 +649,7 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
                         .is_none_or(|filter| site.name.to_ascii_lowercase().contains(filter))
                 })
                 .collect();
-            let site_channels = selected_sites
-                .iter()
-                .flat_map(|site| site.control_channels_hz.iter().copied())
-                .collect::<Vec<_>>();
-            let control_channels = if !site_channels.is_empty() {
-                site_channels
-            } else if system.control_channels_hz.is_empty() {
-                system.control_channel_hz.into_iter().collect::<Vec<_>>()
-            } else {
-                system.control_channels_hz.clone()
-            };
+            let control_channels = p25_control_channels(system, site_filter.as_deref());
             let talkgroups_file =
                 talkgroups_file_for_system(&calls_root, &talkgroups, system.id, default_talkgroups_file);
             let mut configured = serde_json::json!({
@@ -615,7 +692,7 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         "ver": 2, "captureDir": "/var/lib/trunkscope/calls",
         "statusServer": status_server,
         "audioArchive": true, "callLog": true, "softVocoder": true,
-        "sources": [source], "systems": configured_systems,
+        "sources": sources, "systems": configured_systems,
     })
 }
 
@@ -976,6 +1053,15 @@ struct ReceiverInput {
     gain_db: Option<f32>,
     #[serde(default)]
     ppm: f32,
+    #[serde(default = "default_receiver_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    role: ReceiverRole,
+    soapy_index: Option<u32>,
+}
+
+fn default_receiver_enabled() -> bool {
+    true
 }
 
 fn receiver_from_input(input: ReceiverInput, id: uuid::Uuid) -> Receiver {
@@ -989,14 +1075,10 @@ fn receiver_from_input(input: ReceiverInput, id: uuid::Uuid) -> Receiver {
         sample_rate_hz: input.sample_rate_hz,
         gain_db: input.gain_db,
         ppm: input.ppm,
-        capabilities: ReceiverCapabilities {
-            minimum_frequency_hz: 1_000_000,
-            maximum_frequency_hz: 2_000_000_000,
-            sample_rates_hz: vec![2_000_000, 2_048_000, 2_400_000],
-            maximum_bandwidth_hz: 2_000_000,
-            supports_agc: true,
-            gain_elements: vec!["LNA".into(), "VGA".into()],
-        },
+        enabled: input.enabled,
+        role: input.role,
+        soapy_index: input.soapy_index,
+        capabilities: receiver_presets::default_capabilities(input.driver),
         health: ReceiverHealth {
             signal_dbfs: -120.0,
             noise_dbfs: -120.0,
@@ -1064,6 +1146,7 @@ async fn create_receiver(
         .expect("receiver lock poisoned")
         .push(receiver.clone());
     persist_receivers(&state);
+    write_decoder_config(&state);
     state.audit("receiver.create", "receiver", receiver.id.to_string());
     (StatusCode::CREATED, Json(receiver)).into_response()
 }
@@ -1083,12 +1166,17 @@ async fn update_receiver(
             return StatusCode::NOT_FOUND.into_response();
         };
         let state_value = existing.state;
+        let capabilities = existing.capabilities.clone();
+        let health = existing.health.clone();
         let mut updated = receiver_from_input(input, id);
         updated.state = state_value;
+        updated.capabilities = capabilities;
+        updated.health = health;
         *existing = updated.clone();
         updated
     };
     persist_receivers(&state);
+    write_decoder_config(&state);
     state.audit("receiver.update", "receiver", id.to_string());
     (StatusCode::OK, Json(updated)).into_response()
 }
@@ -1111,6 +1199,7 @@ async fn delete_receiver(
         return StatusCode::NOT_FOUND;
     }
     persist_receivers(&state);
+    write_decoder_config(&state);
     let _ = state
         .receiver_commands
         .send(crate::state::ReceiverCommand::Stop(id));
@@ -1141,6 +1230,93 @@ async fn receiver_action(
     };
     let _ = state.receiver_commands.send(command);
     (StatusCode::OK, Json(receiver.clone())).into_response()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveredDevice {
+    index: u32,
+    driver: String,
+    label: String,
+    serial: String,
+    args: String,
+    suggested_driver: ReceiverDriver,
+}
+
+async fn receiver_presets_list() -> Json<Vec<receiver_presets::ReceiverDevicePreset>> {
+    Json(receiver_presets::device_presets())
+}
+
+async fn discover_receivers(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let executable = std::env::var("TRUNKSCOPE_RADIOD_PATH")
+        .unwrap_or_else(|_| "/usr/local/bin/trunkscope-radiod".into());
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::process::Command::new(executable)
+            .arg("--list-devices")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output(),
+    )
+    .await;
+    let Ok(Ok(output)) = output else {
+        return (
+            StatusCode::GATEWAY_TIMEOUT,
+            "device discovery timed out",
+        )
+            .into_response();
+    };
+    if !output.status.success() {
+        return (
+            StatusCode::BAD_GATEWAY,
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+            .into_response();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut devices = Vec::new();
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(|v| v.as_str()) != Some("device") {
+            continue;
+        }
+        let index = value.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let driver = value
+            .get("driver")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let label = value
+            .get("label")
+            .and_then(|v| v.as_str())
+            .unwrap_or("SDR receiver")
+            .to_string();
+        let serial = value
+            .get("serial")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let args = value
+            .get("args")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let suggested_driver = receiver_presets::driver_from_soapy_name(&driver);
+        devices.push(DiscoveredDevice {
+            index,
+            driver,
+            label,
+            serial,
+            args,
+            suggested_driver,
+        });
+    }
+    (StatusCode::OK, Json(serde_json::json!({ "devices": devices }))).into_response()
 }
 
 async fn receiver_probe(
@@ -1925,6 +2101,88 @@ async fn summary_status(State(state): State<Arc<AppState>>) -> Json<serde_json::
         "provider": settings.summary_provider,
         "model": settings.summary_model
     }))
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TranscribeModelDiscoveryRequest {
+    transcribe_url: Option<String>,
+    transcribe_provider: Option<String>,
+    transcribe_api_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SummaryModelDiscoveryRequest {
+    summary_url: Option<String>,
+    summary_provider: Option<String>,
+    summary_api_key: Option<String>,
+}
+
+fn apply_transcribe_discovery_overrides(
+    settings: &mut AppSettings,
+    overrides: TranscribeModelDiscoveryRequest,
+) {
+    if let Some(url) = overrides.transcribe_url {
+        settings.transcribe_url = url;
+    }
+    if let Some(provider) = overrides.transcribe_provider {
+        settings.transcribe_provider = provider;
+    }
+    if let Some(api_key) = overrides.transcribe_api_key {
+        settings.transcribe_api_key = api_key;
+    }
+}
+
+fn apply_summary_discovery_overrides(
+    settings: &mut AppSettings,
+    overrides: SummaryModelDiscoveryRequest,
+) {
+    if let Some(url) = overrides.summary_url {
+        settings.summary_url = url;
+    }
+    if let Some(provider) = overrides.summary_provider {
+        settings.summary_provider = provider;
+    }
+    if let Some(api_key) = overrides.summary_api_key {
+        settings.summary_api_key = api_key;
+    }
+}
+
+async fn transcribe_models(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Option<Json<TranscribeModelDiscoveryRequest>>,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let mut settings = state.settings.read().expect("settings lock poisoned").clone();
+    if let Some(Json(overrides)) = body {
+        apply_transcribe_discovery_overrides(&mut settings, overrides);
+    }
+    match crate::providers::list_transcribe_models(&settings).await {
+        Ok(models) => (StatusCode::OK, Json(models)).into_response(),
+        Err(error) => (StatusCode::BAD_GATEWAY, error).into_response(),
+    }
+}
+
+async fn summary_models(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Option<Json<SummaryModelDiscoveryRequest>>,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let mut settings = state.settings.read().expect("settings lock poisoned").clone();
+    if let Some(Json(overrides)) = body {
+        apply_summary_discovery_overrides(&mut settings, overrides);
+    }
+    match crate::providers::list_summary_models(&settings).await {
+        Ok(models) => (StatusCode::OK, Json(models)).into_response(),
+        Err(error) => (StatusCode::BAD_GATEWAY, error).into_response(),
+    }
 }
 
 async fn transcribe_test(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -2716,15 +2974,9 @@ async fn save_settings(
         )
         || settings.radio_frequency_hz == 0
         || settings.radio_sample_rate_hz == 0
-        || !matches!(
-            settings.ai_profile.as_str(),
-            "cpu-faster-whisper-small"
-                | "cpu-whispercpp"
-                | "gpu-faster-whisper"
-                | "gpu-parakeet"
-                | "gpu-qwen3"
-                | "experimental-radio"
-        )
+        || settings.ai_profile.trim().is_empty()
+        || settings.transcribe_model.trim().is_empty()
+        || settings.summary_model.trim().is_empty()
         || !(settings.transcribe_url.is_empty()
             || settings.transcribe_url.starts_with("http://")
             || settings.transcribe_url.starts_with("https://"))
@@ -2927,6 +3179,7 @@ async fn delete_system(
     {
         let _ = sender.send(crate::persistence::Command::DeleteSystem(id));
     }
+    write_decoder_config(&state);
     StatusCode::NO_CONTENT
 }
 
@@ -3050,6 +3303,102 @@ mod tests {
     }
 
     #[test]
+    fn decoder_config_emits_multiple_sources_for_assigned_receivers() {
+        let state = test_state();
+        let receiver_a = uuid::Uuid::new_v4();
+        let receiver_b = uuid::Uuid::new_v4();
+        state.receivers.write().unwrap().extend([
+            Receiver {
+                id: receiver_a,
+                label: "VHF RTL".into(),
+                driver: ReceiverDriver::RtlSdr,
+                serial: "driver=rtlsdr".into(),
+                state: ReceiverState::Stopped,
+                center_frequency_hz: Some(152_112_500),
+                sample_rate_hz: Some(2_400_000),
+                gain_db: Some(30.0),
+                ppm: 0.0,
+                enabled: true,
+                role: ReceiverRole::P25,
+                soapy_index: Some(0),
+                capabilities: receiver_presets::default_capabilities(ReceiverDriver::RtlSdr),
+                health: ReceiverHealth {
+                    signal_dbfs: -120.0,
+                    noise_dbfs: -120.0,
+                    frequency_error_hz: 0.0,
+                    dropped_samples: 0,
+                    updated_at: chrono::Utc::now(),
+                },
+            },
+            Receiver {
+                id: receiver_b,
+                label: "UHF Airspy".into(),
+                driver: ReceiverDriver::Airspy,
+                serial: "driver=airspy".into(),
+                state: ReceiverState::Stopped,
+                center_frequency_hz: Some(851_012_500),
+                sample_rate_hz: Some(6_000_000),
+                gain_db: Some(20.0),
+                ppm: 0.0,
+                enabled: true,
+                role: ReceiverRole::General,
+                soapy_index: Some(1),
+                capabilities: receiver_presets::default_capabilities(ReceiverDriver::Airspy),
+                health: ReceiverHealth {
+                    signal_dbfs: -120.0,
+                    noise_dbfs: -120.0,
+                    frequency_error_hz: 0.0,
+                    dropped_samples: 0,
+                    updated_at: chrono::Utc::now(),
+                },
+            },
+        ]);
+        state.systems.write().unwrap().extend([
+            SystemProfile {
+                id: uuid::Uuid::new_v4(),
+                name: "VHF P25".into(),
+                protocol: "p25".into(),
+                control_channel_hz: Some(152_112_500),
+                control_channels_hz: vec![],
+                nac: Some(0xB00),
+                frequency_hz: None,
+                bandwidth_hz: None,
+                modulation: None,
+                squelch_db: None,
+                tone: None,
+                deviation_hz: None,
+                step_hz: None,
+                dwell_ms: None,
+                sites: Vec::new(),
+                receiver_id: Some(receiver_a),
+            },
+            SystemProfile {
+                id: uuid::Uuid::new_v4(),
+                name: "UHF P25".into(),
+                protocol: "p25".into(),
+                control_channel_hz: Some(851_012_500),
+                control_channels_hz: vec![],
+                nac: Some(0xB00),
+                frequency_hz: None,
+                bandwidth_hz: None,
+                modulation: None,
+                squelch_db: None,
+                tone: None,
+                deviation_hz: None,
+                step_hz: None,
+                dwell_ms: None,
+                sites: Vec::new(),
+                receiver_id: Some(receiver_b),
+            },
+        ]);
+        let config = decoder_config_value(&state);
+        let sources = config["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 2);
+        assert!(sources[0]["device"].as_str().unwrap().contains("soapy=0"));
+        assert!(sources[1]["device"].as_str().unwrap().contains("soapy=1"));
+    }
+
+    #[test]
     fn decoder_config_includes_conventional_fm_channels() {
         let state = test_state();
         state.systems.write().unwrap().clear();
@@ -3069,6 +3418,7 @@ mod tests {
             step_hz: Some(12_500),
             dwell_ms: Some(2_500),
             sites: Vec::new(),
+            receiver_id: None,
         });
         let config = decoder_config_value(&state);
         let systems = config["systems"].as_array().unwrap();
