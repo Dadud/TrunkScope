@@ -1,61 +1,421 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
-import { callAudioUrl, createReceiver, deleteReceiver, getAuthStatus, getDiagnostics, getRuntime, getSession, getSettings, getSnapshot, getSystems, importTalkgroups, login, logout, receiverAction, saveSettings, saveSystem, setupAdmin, subscribeToCalls, updateReceiver, type AppSettings, type Diagnostics, type ReceiverInput } from "./api";
-import { formatElapsed, formatFrequency, signalQuality } from "./format";
-import { MapPanel } from "./MapPanel";
-import { OperationsSummary } from "./OperationsSummary";
-import { SitesEditor } from "./SitesEditor";
-import { SessionPanel } from "./SessionPanel";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
+import {
+  callAudioUrl,
+  getAuthStatus,
+  getDiagnostics,
+  getRuntime,
+  getSession,
+  getSettings,
+  getSnapshot,
+  login,
+  logout,
+  setupAdmin,
+  subscribeToCalls,
+  type AppSettings,
+  type Diagnostics,
+  type RuntimeStatus,
+} from "./api";
 import type { Call, Receiver, Snapshot } from "./types";
-import type { SystemProfile } from "./api";
+import { Header } from "./components/Header";
+import { MapConsole } from "./components/MapConsole";
+import { LiveFeedHUD } from "./components/LiveFeedHUD";
+import { OperationsDrawer } from "./components/OperationsDrawer";
+import { TalkgroupDrawer } from "./components/TalkgroupDrawer";
+import { ArchiveDrawer } from "./components/ArchiveDrawer";
+import { ApplianceDrawer } from "./components/ApplianceDrawer";
 
-type View = "live" | "map" | "receivers" | "systems" | "archive" | "admin" | "settings";
-const empty: Snapshot = { receivers: [], calls: [], publicPolicy: { enabled: false, delaySeconds: 120, allowedTalkgroups: [], exposeTranscripts: false, exposeRadioIds: false, exposePreciseLocations: false } };
-const nav: Array<[View, string, string]> = [["live", "Live console", "live"], ["map", "Map", "map"], ["receivers", "Receivers", "radio"], ["systems", "Systems", "gear"], ["archive", "Call archive", "archive"], ["admin", "Administration", "gear"], ["settings", "Settings", "gear"]];
-
-function Icon({ name }: { name: string }) { const paths: Record<string, string> = { live: "M4 12h3l2-6 4 13 3-9 2 2h2", map: "M4 6l5-2 6 2 5-2v14l-5 2-6-2-5 2z", radio: "M5 8h14v11H5zM8 4l8 4M9 14h.01M13 14h4", archive: "M4 7h16v13H4zM2 3h20v4H2z", gear: "M12 8a4 4 0 100 8 4 4 0 000-8z" }; return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name] ?? paths.gear} /></svg>; }
-
-function ReceiverCard({ receiver, onChanged, onRemoved }: { receiver: Receiver; onChanged: (receiver: Receiver) => void; onRemoved: (id: string) => void }) {
-  const [editing, setEditing] = useState(false); const [busy, setBusy] = useState(""); const [status, setStatus] = useState("");
-  const [draft, setDraft] = useState<ReceiverInput>({ label: receiver.label, driver: receiver.driver, serial: receiver.serial, centerFrequencyHz: receiver.centerFrequencyHz ?? 851012500, sampleRateHz: receiver.sampleRateHz ?? 2400000, gainDb: receiver.gainDb ?? 0, ppm: receiver.ppm ?? 0 });
-  useEffect(() => setDraft({ label: receiver.label, driver: receiver.driver, serial: receiver.serial, centerFrequencyHz: receiver.centerFrequencyHz ?? 851012500, sampleRateHz: receiver.sampleRateHz ?? 2400000, gainDb: receiver.gainDb ?? 0, ppm: receiver.ppm ?? 0 }), [receiver]);
-  const set = <K extends keyof ReceiverInput>(key: K, value: ReceiverInput[K]) => setDraft((current) => ({ ...current, [key]: value }));
-  const action = async (name: "probe" | "start" | "stop" | "restart") => { setBusy(name); setStatus(""); try { onChanged(await receiverAction(receiver.id, name)); setStatus(`${name.toUpperCase()} requested`); } catch (error) { setStatus(error instanceof Error ? error.message : "Operation failed"); } finally { setBusy(""); } };
-  const save = async () => { setBusy("save"); try { onChanged(await updateReceiver(receiver.id, draft)); setEditing(false); setStatus("Saved; restart to apply hardware changes"); } catch (error) { setStatus(error instanceof Error ? error.message : "Save failed"); } finally { setBusy(""); } };
-  const remove = async () => { if (!window.confirm(`Remove ${receiver.label}?`)) return; setBusy("delete"); try { await deleteReceiver(receiver.id); onRemoved(receiver.id); } catch (error) { setStatus(error instanceof Error ? error.message : "Remove failed"); } finally { setBusy(""); } };
-  return <article className="receiver-card"><div className="panel-title"><div><small>RECEIVER</small><h2>{receiver.label}</h2></div><span className={`state ${receiver.state}`}>{receiver.state}</span></div><div className="receiver-grid"><span><small>DRIVER</small>{receiver.driver}</span><span><small>SERIAL</small>{receiver.serial}</span><span><small>CENTER</small>{receiver.centerFrequencyHz ? formatFrequency(receiver.centerFrequencyHz) : "—"}</span><span><small>SAMPLE RATE</small>{receiver.sampleRateHz ? `${(receiver.sampleRateHz / 1e6).toFixed(2)} MHz` : "—"}</span></div><div className="health-row"><span>Signal <b>{receiver.health.signalDbfs.toFixed(1)} dBFS</b></span><div className="meter"><i style={{ width: `${signalQuality(receiver.health.signalDbfs)}%` }} /></div><span>{receiver.health.droppedSamples} dropped</span></div><div className="receiver-actions"><button className="outline" disabled={!!busy} onClick={() => setEditing((value) => !value)}>{editing ? "CANCEL" : "CONFIGURE"}</button><button className="outline" disabled={!!busy} onClick={() => void action("probe")}>PROBE</button><button className="outline" disabled={!!busy} onClick={() => void action("start")}>START</button><button className="outline" disabled={!!busy} onClick={() => void action("stop")}>STOP</button><button className="outline" disabled={!!busy} onClick={() => void action("restart")}>RESTART</button><button className="danger" disabled={!!busy} onClick={() => void remove()}>REMOVE</button>{status && <span className="action-status">{status}</span>}</div>{editing && <div className="config-grid receiver-editor"><label>Label<input value={draft.label} onChange={(event) => set("label", event.target.value)} /></label><label>Driver<select value={draft.driver} onChange={(event) => set("driver", event.target.value as ReceiverInput["driver"])}><option value="sdrplay">SDRplay</option><option value="rtlSdr">RTL-SDR</option><option value="airspy">Airspy</option><option value="simulator">Simulator</option></select></label><label>Device / serial<input value={draft.serial} onChange={(event) => set("serial", event.target.value)} /></label><label>Center frequency (Hz)<input inputMode="numeric" value={draft.centerFrequencyHz ?? ""} onChange={(event) => set("centerFrequencyHz", Number(event.target.value))} /></label><label>Sample rate (Hz)<input inputMode="numeric" value={draft.sampleRateHz ?? ""} onChange={(event) => set("sampleRateHz", Number(event.target.value))} /></label><label>Gain (dB)<input inputMode="decimal" value={draft.gainDb ?? ""} onChange={(event) => set("gainDb", Number(event.target.value))} /></label><label>PPM correction<input inputMode="decimal" value={draft.ppm} onChange={(event) => set("ppm", Number(event.target.value))} /></label><div className="config-actions"><button className="primary" disabled={busy === "save"} onClick={() => void save()}>SAVE RECEIVER</button></div></div>}</article>;
-}
-function ReceiversView({ receivers, onChanged, onRemoved }: { receivers: Receiver[]; onChanged: (receiver: Receiver) => void; onRemoved: (id: string) => void }) {
-  const [showAdd, setShowAdd] = useState(false); const [status, setStatus] = useState(""); const [draft, setDraft] = useState<ReceiverInput>({ label: "New receiver", driver: "sdrplay", serial: "", centerFrequencyHz: 851012500, sampleRateHz: 2400000, gainDb: 0, ppm: 0 });
-  const set = <K extends keyof ReceiverInput>(key: K, value: ReceiverInput[K]) => setDraft((current) => ({ ...current, [key]: value }));
-  const add = async () => { try { const receiver = await createReceiver(draft); onChanged(receiver); setShowAdd(false); setStatus("Receiver added"); } catch (error) { setStatus(error instanceof Error ? error.message : "Add failed"); } };
-  return <section className="stack"><div className="page-card receiver-toolbar"><div><small>HARDWARE INVENTORY</small><h2>{receivers.length} receiver{receivers.length === 1 ? "" : "s"}</h2><p className="settings-help">Configure hardware, remote SDRs, and lifecycle operations. Changes are persisted on the main appliance.</p></div><button className="primary" onClick={() => setShowAdd((value) => !value)}>{showAdd ? "CANCEL" : "ADD RECEIVER"}</button></div>{showAdd && <div className="page-card config-grid receiver-editor"><label>Label<input value={draft.label} onChange={(event) => set("label", event.target.value)} /></label><label>Driver<select value={draft.driver} onChange={(event) => set("driver", event.target.value as ReceiverInput["driver"])}><option value="sdrplay">SDRplay</option><option value="rtlSdr">RTL-SDR</option><option value="airspy">Airspy</option><option value="simulator">Simulator</option></select></label><label>Device / serial<input value={draft.serial} onChange={(event) => set("serial", event.target.value)} /></label><label>Center frequency (Hz)<input inputMode="numeric" value={draft.centerFrequencyHz ?? ""} onChange={(event) => set("centerFrequencyHz", Number(event.target.value))} /></label><label>Sample rate (Hz)<input inputMode="numeric" value={draft.sampleRateHz ?? ""} onChange={(event) => set("sampleRateHz", Number(event.target.value))} /></label><label>Gain (dB)<input inputMode="decimal" value={draft.gainDb ?? ""} onChange={(event) => set("gainDb", Number(event.target.value))} /></label><label>PPM correction<input inputMode="decimal" value={draft.ppm} onChange={(event) => set("ppm", Number(event.target.value))} /></label><div className="config-actions"><button className="primary" onClick={() => void add()}>SAVE RECEIVER</button>{status && <span>{status}</span>}</div></div>}{receivers.length ? receivers.map((item) => <ReceiverCard key={item.id} receiver={item} onChanged={onChanged} onRemoved={onRemoved} />) : <div className="page-card empty-state">No receivers connected. Add one to begin hardware setup.</div>}</section>;
-}
-function SystemsView() { const [name, setName] = useState("Metro P25"); const [protocol, setProtocol] = useState("p25"); const [control, setControl] = useState("851012500"); const [nac, setNac] = useState("293"); const [status, setStatus] = useState(""); const [systems, setSystems] = useState<SystemProfile[]>([]); useEffect(() => { getSystems().then(setSystems).catch(() => undefined); }, []); const save = async () => { try { const saved = await saveSystem({ name, protocol, controlChannelHz: Number(control), nac: Number(nac) }); setSystems((items) => [...items.filter((item) => item.id !== saved.id), saved]); setStatus("Saved and validated"); } catch (error) { setStatus(error instanceof Error ? error.message : "Save failed"); } }; const importProfile = async (event: ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (!file) return; try { const profile = JSON.parse(await file.text()); setName(profile.name ?? ""); setProtocol(profile.protocol ?? "p25"); setControl(String(profile.controlChannelHz ?? "")); setNac(String(profile.nac ?? "")); setStatus("Imported; review and save to apply"); } catch { setStatus("Invalid JSON profile"); } }; const exportProfile = () => { const blob = new Blob([JSON.stringify({ name, protocol, controlChannelHz: Number(control), nac: Number(nac) }, null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${name || "system"}.json`; link.click(); URL.revokeObjectURL(link.href); }; return <section className="page-card"><div className="panel-title"><div><small>CONFIGURATION</small><h2>Systems and talkgroups</h2></div><div className="toolbar"><label className="outline">IMPORT JSON<input type="file" accept="application/json" hidden onChange={importProfile} /></label><button className="outline" onClick={exportProfile}>EXPORT JSON</button></div></div>{systems.length > 0 && <div className="system-list">{systems.map((system) => <button key={system.id} onClick={() => { setName(system.name); setProtocol(system.protocol); setControl(String(system.controlChannelHz ?? "")); setNac(String(system.nac ?? "")); }}><strong>{system.name}</strong><span>{system.protocol} · {formatFrequency(system.controlChannelHz)}</span></button>)}</div>}<div className="config-grid"><label>System name<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>Protocol<select value={protocol} onChange={(event) => setProtocol(event.target.value)}><option value="p25">P25 Phase 1/2</option><option value="analog">Analog / FM</option></select></label><label>Control channel<input inputMode="numeric" value={control} onChange={(event) => setControl(event.target.value)} /></label><label>NAC<input inputMode="numeric" value={nac} onChange={(event) => setNac(event.target.value)} /></label></div><div className="config-actions"><button className="primary" onClick={save}>SAVE SYSTEM</button><span>{status || "Changes generate a validated Trunk Recorder profile."}</span></div></section>; }
-function CallFeed({ calls, selected, onSelect }: { calls: Call[]; selected?: string; onSelect: (id: string) => void }) {
-  return <div className="call-feed">{calls.length ? calls.map((call) => <article className={`feed-row ${call.id === selected ? "selected" : ""}`} key={call.id} onClick={() => onSelect(call.id)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelect(call.id); }}><span>{new Date(call.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><strong>{call.talkgroupLabel}<small>{call.systemName}</small></strong><span><mark>{call.category}</mark></span><span>{formatFrequency(call.frequencyHz)}</span><span className={`state ${call.state}`}>{call.state}</span>{call.id === selected && <div className="feed-expanded">{call.audio && call.encryption === "clear" ? <audio className="call-audio" controls preload="metadata" src={callAudioUrl(call.id)} onClick={(event) => event.stopPropagation()} /> : <span className="location-muted">Audio unavailable</span>}<p>{call.transcript ?? "Transcription pending…"}</p>{call.summary && <blockquote>{call.summary}</blockquote>}{call.location && <em>⌖ {call.location.label}</em>}</div>}</article>) : <div className="empty-state">No decoded calls yet.</div>}</div>;
-}
-function RadioProfileView() { const [profile, setProfile] = useState<SystemProfile>({ id: "", name: "Local FM", protocol: "analog-fm", frequencyHz: 155550000, bandwidthHz: 12500, modulation: "NFM", squelchDb: -65, tone: "none", deviationHz: 2500, stepHz: 12500, dwellMs: 2500 }); const [profiles, setProfiles] = useState<SystemProfile[]>([]); const [status, setStatus] = useState(""); const analog = profile.protocol === "analog-fm"; const update = (patch: Partial<SystemProfile>) => setProfile((current) => ({ ...current, ...patch })); useEffect(() => { getSystems().then(setProfiles).catch(() => undefined); }, []); const save = async () => { try { const saved = await saveSystem(profile); setProfile(saved); setProfiles((items) => [...items.filter((item) => item.id !== saved.id), saved]); setStatus("Saved and validated"); } catch (error) { setStatus(error instanceof Error ? error.message : "Save failed"); } }; return <section className="page-card"><div className="panel-title"><div><small>RADIO PROFILE</small><h2>Analog FM and trunked systems</h2></div><button className="outline" onClick={() => update({ protocol: analog ? "p25" : "analog-fm" })}>{analog ? "SWITCH TO P25" : "SWITCH TO ANALOG FM"}</button></div>{profiles.length > 0 && <div className="system-list">{profiles.map((item) => <button key={item.id} onClick={() => setProfile(item)}><strong>{item.name}</strong><span>{item.protocol === "analog-fm" ? `${formatFrequency(item.frequencyHz)} · ${item.modulation ?? "NFM"}` : `Control ${formatFrequency(item.controlChannelHz)}`}</span></button>)}</div>}<div className="config-grid"><label>Profile name<input value={profile.name} onChange={(event) => update({ name: event.target.value })} /></label><label>Mode<select value={profile.protocol} onChange={(event) => update({ protocol: event.target.value })}><option value="analog-fm">Analog FM</option><option value="p25">P25 Phase 1/2</option></select></label>{analog ? <><label>Frequency (Hz)<input inputMode="numeric" value={profile.frequencyHz ?? ""} onChange={(event) => update({ frequencyHz: Number(event.target.value) })} /></label><label>Channel bandwidth<select value={profile.bandwidthHz} onChange={(event) => update({ bandwidthHz: Number(event.target.value) })}><option value="6250">6.25 kHz</option><option value="12500">12.5 kHz</option><option value="25000">25 kHz</option></select></label><label>Modulation<select value={profile.modulation} onChange={(event) => update({ modulation: event.target.value })}><option>NFM</option><option>WFM</option><option>AM</option></select></label><label>Deviation (Hz)<input inputMode="numeric" value={profile.deviationHz ?? ""} onChange={(event) => update({ deviationHz: Number(event.target.value) })} /></label><label>Squelch (dBFS)<input inputMode="decimal" value={profile.squelchDb ?? ""} onChange={(event) => update({ squelchDb: Number(event.target.value) })} /></label><label>CTCSS or DCS tone<input placeholder="none, 100.0, D023" value={profile.tone ?? "none"} onChange={(event) => update({ tone: event.target.value })} /></label><label>Scan step (Hz)<input inputMode="numeric" value={profile.stepHz ?? ""} onChange={(event) => update({ stepHz: Number(event.target.value) })} /></label><label>Dwell (ms)<input inputMode="numeric" value={profile.dwellMs ?? ""} onChange={(event) => update({ dwellMs: Number(event.target.value) })} /></label></> : <><label>Control channel (Hz)<input inputMode="numeric" value={profile.controlChannelHz ?? ""} onChange={(event) => update({ controlChannelHz: Number(event.target.value) })} /></label><label>NAC<input inputMode="numeric" value={profile.nac ?? ""} onChange={(event) => update({ nac: Number(event.target.value) })} /></label></>}</div><div className="config-actions"><button className="primary" onClick={save}>SAVE PROFILE</button><span>{status || (analog ? "Analog FM tunes directly to a frequency. Control channels and NAC are not used." : "P25 uses a control channel and NAC for trunking." )}</span></div></section>; }
-function ArchiveView({ calls, selected, onSelect }: { calls: Call[]; selected?: string; onSelect: (id: string) => void }) { const [query, setQuery] = useState(""); const filtered = calls.filter((call) => `${call.talkgroupLabel} ${call.talkgroupId} ${call.category} ${call.systemName} ${call.transcript ?? ""}`.toLowerCase().includes(query.toLowerCase())); return <section className="page-card"><div className="panel-title"><div><small>HISTORY</small><h2>Call archive</h2></div><input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search talkgroups, transcripts…" /></div><CallFeed calls={filtered} selected={selected} onSelect={onSelect} /></section>; }
-
-function SettingsView({ settings, onSave }: { settings: AppSettings; onSave: (value: AppSettings) => Promise<void> }) { const [draft, setDraft] = useState(settings); const [status, setStatus] = useState(""); useEffect(() => setDraft(settings), [settings]); const update = (patch: Partial<AppSettings>) => setDraft((current) => ({ ...current, ...patch })); const save = async () => { try { await onSave(draft); setStatus("Settings saved; restart services if radio or AI values changed"); } catch (cause) { setStatus(cause instanceof Error ? cause.message : "Save failed"); } }; return <section className="page-card"><div className="panel-title"><div><small>APPLIANCE SETTINGS</small><h2>Home, receiver, AI, and privacy</h2></div></div><h3>Map home</h3><div className="config-grid"><label>Home label<input value={draft.homeLabel} onChange={(event) => update({ homeLabel: event.target.value })} /></label><label>Latitude<input inputMode="decimal" value={draft.homeLatitude} onChange={(event) => update({ homeLatitude: Number(event.target.value) })} /></label><label>Longitude<input inputMode="decimal" value={draft.homeLongitude} onChange={(event) => update({ homeLongitude: Number(event.target.value) })} /></label></div><h3>Receiver</h3><div className="config-grid"><label>Mode<select value={draft.radioMode} onChange={(event) => update({ radioMode: event.target.value })}><option value="radiod">Hardware radiod</option><option value="simulator">Simulator</option><option value="decoder">External decoder</option></select></label><label>Device arguments<input value={draft.radioDevice} placeholder="driver=sdrplay or driver=remote,..." onChange={(event) => update({ radioDevice: event.target.value })} /></label><label>Frequency (Hz)<input inputMode="numeric" value={draft.radioFrequencyHz} onChange={(event) => update({ radioFrequencyHz: Number(event.target.value) })} /></label><label>Sample rate (Hz)<input inputMode="numeric" value={draft.radioSampleRateHz} onChange={(event) => update({ radioSampleRateHz: Number(event.target.value) })} /></label><label>Bandwidth (Hz)<input inputMode="numeric" value={draft.radioBandwidthHz ?? ""} onChange={(event) => update({ radioBandwidthHz: Number(event.target.value) || undefined })} /></label><label>Gain (dB)<input inputMode="decimal" value={draft.radioGainDb ?? ""} onChange={(event) => update({ radioGainDb: Number(event.target.value) || undefined })} /></label><label>PPM correction<input inputMode="decimal" value={draft.radioPpm} onChange={(event) => update({ radioPpm: Number(event.target.value) })} /></label><label className="check"><input type="checkbox" checked={draft.radioAgc} onChange={(event) => update({ radioAgc: event.target.checked })} /> Automatic gain control</label></div><h3>Transcription and summaries</h3><div className="config-grid"><label className="check"><input type="checkbox" checked={draft.aiEnabled} onChange={(event) => update({ aiEnabled: event.target.checked })} /> Enable local AI processing</label><label>Transcription model<input value={draft.transcribeModel} onChange={(event) => update({ transcribeModel: event.target.value })} /></label><label>Summary model<input value={draft.summaryModel} onChange={(event) => update({ summaryModel: event.target.value })} /></label><label>Summary refresh (minutes)<input inputMode="numeric" min="1" max="60" value={draft.summaryRefreshMinutes ?? 15} onChange={(event) => update({ summaryRefreshMinutes: Number(event.target.value) })} /></label></div><h3>Retention</h3><div className="config-grid"><label>Audio retention (days)<input inputMode="numeric" min="1" value={draft.audioRetentionDays ?? ""} onChange={(event) => update({ audioRetentionDays: Number(event.target.value) || undefined })} /></label><label>Transcript retention (days)<input inputMode="numeric" min="1" value={draft.transcriptRetentionDays ?? ""} onChange={(event) => update({ transcriptRetentionDays: Number(event.target.value) || undefined })} /></label><label>Metadata retention (days)<input inputMode="numeric" min="1" value={draft.metadataRetentionDays ?? ""} onChange={(event) => update({ metadataRetentionDays: Number(event.target.value) || undefined })} /></label></div><h3>Public feed privacy</h3><div className="config-grid"><label className="check"><input type="checkbox" checked={draft.publicFeedEnabled} onChange={(event) => update({ publicFeedEnabled: event.target.checked })} /> Enable delayed public feed</label><label>Delay (seconds)<input inputMode="numeric" value={draft.publicFeedDelaySeconds} onChange={(event) => update({ publicFeedDelaySeconds: Number(event.target.value) })} /></label><label className="check"><input type="checkbox" checked={draft.exposeTranscripts} onChange={(event) => update({ exposeTranscripts: event.target.checked })} /> Expose transcripts</label><label className="check"><input type="checkbox" checked={draft.exposeRadioIds} onChange={(event) => update({ exposeRadioIds: event.target.checked })} /> Expose radio IDs</label><label className="check"><input type="checkbox" checked={draft.exposePreciseLocations} onChange={(event) => update({ exposePreciseLocations: event.target.checked })} /> Expose precise locations</label></div><p className="settings-help">Map coordinates apply immediately. Receiver and AI process settings are persisted and take effect after the affected containers restart.</p><div className="config-actions"><button className="primary" onClick={save}>SAVE SETTINGS</button><span>{status || "All changes are stored on the main appliance."}</span></div></section>; }
-
-function SetupView({ onComplete }: { onComplete: () => void }) { const [username, setUsername] = useState("admin"); const [password, setPassword] = useState(""); const [error, setError] = useState(""); const submit = async (event: React.FormEvent) => { event.preventDefault(); try { await setupAdmin(username, password); onComplete(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Setup failed"); } }; return <main className="login-shell"><form className="page-card login-card" onSubmit={submit}><div className="brand"><span className="brand-mark">⌁</span><span>TRUNKSCOPE</span></div><p className="eyebrow">FIRST-RUN SECURITY</p><h1>Create administrator</h1><p className="settings-help">Set the credential required for receiver controls, imports, recordings, and appliance settings.</p><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label><label>Password<input type="password" minLength={12} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></label>{error && <div className="notice">{error}</div>}<button className="primary" type="submit">CREATE ADMINISTRATOR</button></form></main>; }
-function LoginView({ onLogin }: { onLogin: (session: { username: string; role: string }) => void }) { const [username, setUsername] = useState("admin"); const [password, setPassword] = useState(""); const [error, setError] = useState(""); const submit = async (event: React.FormEvent) => { event.preventDefault(); setError(""); try { onLogin(await login(username, password)); } catch (cause) { setError(cause instanceof Error ? cause.message : "Login failed"); } }; return <main className="login-shell"><form className="page-card login-card" onSubmit={submit}><div className="brand"><span className="brand-mark">⌁</span><span>TRUNKSCOPE</span></div><p className="eyebrow">LOCAL APPLIANCE</p><h1>Sign in</h1><p className="settings-help">Use the administrator credential created during first-run setup.</p><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>{error && <div className="notice" role="alert">{error}</div>}<button className="primary" type="submit">SIGN IN</button></form></main>; }
+const emptySnapshot: Snapshot = {
+  receivers: [],
+  calls: [],
+  publicPolicy: {
+    enabled: false,
+    delaySeconds: 120,
+    allowedTalkgroups: [],
+    exposeTranscripts: false,
+    exposeRadioIds: false,
+    exposePreciseLocations: false,
+  },
+};
 
 export default function App() {
-  const [data, setData] = useState<Snapshot>(empty); const [connected, setConnected] = useState(false); const [error, setError] = useState<string>(); const [selected, setSelected] = useState<string>(); const [view, setView] = useState<View>("live"); const [feedQuery, setFeedQuery] = useState(""); const [feedCategory, setFeedCategory] = useState("all"); const [settings, setSettings] = useState<AppSettings>({ homeLabel: "Home", homeLatitude: 41.884, homeLongitude: -87.632, radioMode: "simulator", radioDevice: "", radioFrequencyHz: 851012500, radioSampleRateHz: 2400000, radioAgc: false, radioPpm: 0, aiEnabled: false, aiProfile: "cpu-faster-whisper-small", transcribeUrl: "http://speaches:8000/v1/audio/transcriptions", transcribeModel: "Systran/faster-distil-whisper-small.en", vadEnabled: true, summaryModel: "llama3.2:3b", summaryRefreshMinutes: 15, publicFeedEnabled: false, publicFeedDelaySeconds: 120, exposeTranscripts: false, exposeRadioIds: false, exposePreciseLocations: false, audioRetentionDays: 30, transcriptRetentionDays: 365, metadataRetentionDays: 365 }); const [runtime, setRuntime] = useState<{ decoderConnected: boolean; decoderLastEvent?: string; receiverCount: number; activeCallCount: number }>(); const [diagnostics, setDiagnostics] = useState<Diagnostics>(); const [authReady, setAuthReady] = useState(false); const [authRequired, setAuthRequired] = useState(false); const [setupRequired, setSetupRequired] = useState(false); const [session, setSession] = useState<{ username: string; role: string }>();
-  useEffect(() => { getAuthStatus().then(async (status) => { setSetupRequired(Boolean(status.setupRequired)); setAuthRequired(status.enabled && !status.localOnly); if (!status.enabled || status.localOnly) { if (status.localOnly) setSession({ username: "local", role: "administrator" }); setAuthReady(true); return; } setSession(await getSession()); setAuthReady(true); }).catch(() => setAuthReady(true)); }, []);
-  useEffect(() => { if (!authReady || (authRequired && !session)) return; const refresh = () => { getRuntime().then(setRuntime).catch(() => undefined); getDiagnostics().then(setDiagnostics).catch(() => undefined); getSnapshot().then(setData).catch(() => undefined); }; refresh(); const timer = window.setInterval(refresh, 5000); return () => window.clearInterval(timer); }, [authReady, authRequired, session]);
-  useEffect(() => { if (!authReady || (authRequired && !session)) return; getSettings().then(setSettings).catch(() => undefined); }, [authReady, authRequired, session]);
-  useEffect(() => { const controller = new AbortController(); getSnapshot(controller.signal).then(setData).catch((cause: Error) => setError(cause.message)); const unsubscribe = subscribeToCalls((event) => setData((current) => ({ ...current, calls: [event.payload, ...current.calls.filter((call) => call.id !== event.payload.id)].slice(0, 100) })), setConnected); return () => { controller.abort(); unsubscribe(); }; }, []);
-  // Keep the operator's selected call stable while new short transmissions arrive.
-  useEffect(() => { if (!selected && data.calls[0]) setSelected(data.calls[0].id); }, [data.calls, selected]);
-  const active = data.calls.filter((call) => call.state === "active"); const receiver = data.receivers[0]; const selectedCall = data.calls.find((call) => call.id === selected) ?? active[0] ?? data.calls[0]; const categories = useMemo(() => new Set(data.calls.map((call) => call.category)).size, [data.calls]); const feedCategories = useMemo(() => Array.from(new Set(data.calls.map((call) => call.category))).sort(), [data.calls]); const filteredFeed = useMemo(() => data.calls.filter((call) => (feedCategory === "all" || call.category === feedCategory) && `${call.talkgroupLabel} ${call.talkgroupId} ${call.systemName} ${call.transcript ?? ""}`.toLowerCase().includes(feedQuery.toLowerCase())) .slice(0, 5), [data.calls, feedCategory, feedQuery]); const title = nav.find(([key]) => key === view)?.[1] ?? "Live console";
-  if (!authReady) return <main className="login-shell"><div className="page-card empty-state">Loading TrunkScope…</div></main>;
-  if (setupRequired) return <SetupView onComplete={() => window.location.reload()} />;
-  if (authRequired && !session) return <LoginView onLogin={setSession} />;
-  const updateReceiverInSnapshot = (updated: Receiver) => setData((current) => ({ ...current, receivers: [...current.receivers.filter((item) => item.id !== updated.id), updated] }));
-  const pipelineState = diagnostics?.decoder.state === "connected" || diagnostics?.decoder.state === "running-unverified" ? diagnostics.decoder.state : diagnostics?.capture.state ?? "unknown";
-  const linkLabel = diagnostics?.simulated ? "SIMULATED" : pipelineState === "connected" ? "DECODER ONLINE" : pipelineState === "running-unverified" ? "DECODER RUNNING" : pipelineState === "ready" ? "RF CAPTURE READY" : "RF UNAVAILABLE";
-  return <div className="shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">⌁</span><span>TRUNKSCOPE</span></div><nav>{nav.map(([key, label, icon]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><Icon name={icon} /><span>{label}</span>{key === "live" && <b>{active.length}</b>}</button>)}</nav><div className="side-bottom"><div className="privacy"><span>Public feed</span><strong>{data.publicPolicy.enabled ? "ENABLED" : "PRIVATE"}</strong></div><div className="profile"><span>OS</span><div><strong>{session?.username ?? "Administrator"}</strong><small>Local appliance</small></div></div><button className="quiet logout-button" onClick={() => void logout().finally(() => setSession(undefined))}>SIGN OUT</button></div></aside><main><header><div><p className="eyebrow">MONITORING</p><h1>{title}</h1></div><div className={`connection ${pipelineState === "connected" || pipelineState === "ready" ? "online" : ""}`}><i />{linkLabel}{diagnostics?.simulated && " · SIMULATOR"}</div></header>{error && <div className="notice">API unavailable: {error}. Check the control-plane container and receiver connection.</div>}{view === "settings" ? <SettingsView settings={settings} onSave={async (value) => { const saved = await saveSettings(value); setSettings(saved); }} /> : view === "systems" ? <RadioProfileView /> : view === "receivers" ? <ReceiversView receivers={data.receivers} onChanged={updateReceiverInSnapshot} onRemoved={(id) => setData((current) => ({ ...current, receivers: current.receivers.filter((item) => item.id !== id) }))} /> : view === "archive" ? <ArchiveView calls={data.calls} selected={selectedCall?.id} onSelect={setSelected} /> : view === "map" ? <section className="map-card full-map"><div className="panel-title"><div><small>INCIDENT VIEW</small><h2>Activity map</h2></div><span className="chip">{data.calls.filter((c) => c.location).length} located</span></div><MapPanel calls={data.calls} /></section> : view === "admin" ? <section className="page-card"><div className="panel-title"><div><small>APPLIANCE</small><h2>Administration</h2></div></div><div className="admin-list"><span>Decoder <b>{diagnostics?.decoder.state ?? "unknown"}</b></span><span>Public feed <b>{data.publicPolicy.enabled ? "enabled" : "private by default"}</b></span><span>Receivers <b>{data.receivers.length} configured</b></span></div></section> : <><section className="metrics"><article><small>ACTIVE CALLS</small><strong>{active.length.toString().padStart(2, "0")}</strong><span className="lime">Live now</span></article><article><small>RECEIVER SIGNAL</small><strong>{receiver ? receiver.health.signalDbfs.toFixed(1) : "—"}<em> dBFS</em></strong><div className="meter"><i style={{ width: `${receiver ? signalQuality(receiver.health.signalDbfs) : 0}%` }} /></div></article><article><small>CALLS CAPTURED</small><strong>{data.calls.length}</strong><span>Current session</span></article><article><small>CATEGORIES</small><strong>{categories}</strong><span>Detected</span></article></section><section className="workspace"><div className="map-card"><div className="panel-title"><div><small>INCIDENT VIEW</small><h2>Activity map</h2></div><span className="chip">{data.calls.filter((c) => c.location).length} located</span></div><MapPanel calls={data.calls} /></div><div className="call-card"><div className="panel-title"><div><small>NOW PLAYING</small><h2>{selectedCall?.talkgroupLabel ?? "Waiting for traffic"}</h2></div>{selectedCall && <span className={`state ${selectedCall.state}`}>{selectedCall.state}</span>}</div>{selectedCall ? <>{selectedCall.audio && selectedCall.encryption === "clear" ? <audio className="call-audio primary-call-audio" controls preload="metadata" src={callAudioUrl(selectedCall.id)} /> : <div className="waveform unavailable-waveform" aria-label="Audio unavailable">Audio recording unavailable</div>}<div className="call-facts"><span><small>FREQUENCY</small>{formatFrequency(selectedCall.frequencyHz)}</span><span><small>TALKGROUP</small>{selectedCall.talkgroupId}</span><span><small>DURATION</small>{formatElapsed(selectedCall.startedAt, selectedCall.endedAt)}</span></div><div className="transcript"><small>TRANSCRIPT</small><p>{selectedCall.transcript ?? "Listening… transcription will appear when the call completes."}</p>{selectedCall.summary && <blockquote>{selectedCall.summary}</blockquote>}</div></> : <div className="empty-state">{receiver ? "RSP1B is receiving. Decoded calls will appear here when trunking is enabled." : "No receiver connected. Live calls will appear here when a radio is online."}</div>}</div></section><OperationsSummary refreshMinutes={settings.summaryRefreshMinutes ?? 15} /><SessionPanel /><SitesEditor /><section className="feed"><div className="panel-title"><div><small>EVENT STREAM</small><h2>Listening feed</h2><p className="settings-help">Latest 5 transmissions stay visible; select any row to inspect it or play clear audio.</p></div><div className="feed-filters"><input className="search" value={feedQuery} onChange={(event) => setFeedQuery(event.target.value)} placeholder="Filter talkgroups, systems…" /><select value={feedCategory} onChange={(event) => setFeedCategory(event.target.value)}><option value="all">All activity</option>{feedCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></div></div><CallFeed calls={filteredFeed} selected={selectedCall?.id} onSelect={setSelected} /></section></>}</main><nav className="mobile-nav">{nav.map(([key, label, icon]) => <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}><Icon name={icon} /><span>{label}</span></button>)}</nav></div>;
+  const [data, setData] = useState<Snapshot>(emptySnapshot);
+  const [selectedCall, setSelectedCall] = useState<Call | undefined>();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("all");
+
+  // Audio State
+  const [volume, setVolume] = useState(0.75);
+  const [muted, setMuted] = useState(false);
+  const [autoPlay, setAutoPlay] = useState(false);
+  const autoPlayAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Telemetry & Settings
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeStatus | undefined>();
+  const [diagnostics, setDiagnostics] = useState<Diagnostics | undefined>();
+
+  // Auth
+  const [authReady, setAuthReady] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [setupRequired, setSetupRequired] = useState(false);
+  const [session, setSession] = useState<{ username: string; role: string } | undefined>();
+
+  // Drawers
+  const [activeDrawer, setActiveDrawer] = useState<"operations" | "talkgroups" | "archive" | "appliance" | null>(null);
+  const [inspectedTalkgroupId, setInspectedTalkgroupId] = useState<number | undefined>();
+
+  // Initial Auth Check
+  useEffect(() => {
+    getAuthStatus()
+      .then(async (status) => {
+        setSetupRequired(Boolean(status.setupRequired));
+        setAuthRequired(status.enabled && !status.localOnly);
+        if (!status.enabled || status.localOnly) {
+          if (status.localOnly) setSession({ username: "local", role: "administrator" });
+          setAuthReady(true);
+          return;
+        }
+        setSession(await getSession());
+        setAuthReady(true);
+      })
+      .catch(() => setAuthReady(true));
+  }, []);
+
+  // Periodic Polling
+  useEffect(() => {
+    if (!authReady || (authRequired && !session)) return;
+    const refresh = () => {
+      getRuntime().then(setRuntime).catch(() => undefined);
+      getDiagnostics().then(setDiagnostics).catch(() => undefined);
+      getSnapshot().then(setData).catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => window.clearInterval(timer);
+  }, [authReady, authRequired, session]);
+
+  // Load Settings
+  useEffect(() => {
+    if (!authReady || (authRequired && !session)) return;
+    getSettings().then(setSettings).catch(() => undefined);
+  }, [authReady, authRequired, session]);
+
+  // Handle Autoplay for incoming calls
+  const triggerAutoPlay = useCallback(
+    (call: Call) => {
+      if (!autoPlay || muted || call.encryption !== "clear" || !call.audio) return;
+      if (!autoPlayAudioRef.current) {
+        autoPlayAudioRef.current = new Audio();
+      }
+      const audio = autoPlayAudioRef.current;
+      audio.volume = Math.max(0, Math.min(1, volume));
+      audio.src = callAudioUrl(call.id);
+      audio.play().catch(() => undefined);
+    },
+    [autoPlay, muted, volume]
+  );
+
+  // WebSocket Live Call Stream
+  useEffect(() => {
+    const controller = new AbortController();
+    getSnapshot(controller.signal)
+      .then(setData)
+      .catch(() => undefined);
+
+    const unsubscribe = subscribeToCalls(
+      (event) => {
+        setData((curr) => {
+          const exists = curr.calls.some((c) => c.id === event.payload.id);
+          const updated = [
+            event.payload,
+            ...curr.calls.filter((c) => c.id !== event.payload.id),
+          ].slice(0, 150);
+
+          if (!exists && event.payload.state === "complete") {
+            triggerAutoPlay(event.payload);
+          }
+          return { ...curr, calls: updated };
+        });
+      },
+      () => undefined
+    );
+
+    return () => {
+      controller.abort();
+      unsubscribe();
+    };
+  }, [triggerAutoPlay]);
+
+  // Default selected call
+  useEffect(() => {
+    if (!selectedCall && data.calls.length > 0) {
+      setSelectedCall(data.calls[0]);
+    }
+  }, [data.calls, selectedCall]);
+
+  // Category counts
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = { fire: 0, ems: 0, law: 0, traffic: 0, other: 0 };
+    data.calls.forEach((call) => {
+      const c = call.category.toLowerCase();
+      if (c.includes("fire") || c.includes("structure") || c.includes("alarm")) counts.fire++;
+      else if (c.includes("medical") || c.includes("ems") || c.includes("rescue")) counts.ems++;
+      else if (c.includes("police") || c.includes("law") || c.includes("sheriff")) counts.law++;
+      else if (c.includes("traffic") || c.includes("crash") || c.includes("collision")) counts.traffic++;
+      else counts.other++;
+    });
+    return counts;
+  }, [data.calls]);
+
+  // Filter calls by search and category
+  const filteredCalls = useMemo(() => {
+    return data.calls.filter((call) => {
+      const c = call.category.toLowerCase();
+      let matchCat = true;
+      if (selectedCategory === "fire") matchCat = c.includes("fire") || c.includes("structure") || c.includes("alarm");
+      else if (selectedCategory === "ems") matchCat = c.includes("medical") || c.includes("ems") || c.includes("rescue");
+      else if (selectedCategory === "law") matchCat = c.includes("police") || c.includes("law") || c.includes("sheriff");
+      else if (selectedCategory === "traffic") matchCat = c.includes("traffic") || c.includes("crash") || c.includes("collision");
+
+      const matchSearch =
+        !searchQuery ||
+        `${call.talkgroupLabel} ${call.talkgroupId} ${call.systemName} ${call.transcript ?? ""} ${call.location?.label ?? ""}`
+          .toLowerCase()
+          .includes(searchQuery.toLowerCase());
+
+      return matchCat && matchSearch;
+    });
+  }, [data.calls, selectedCategory, searchQuery]);
+
+  const homeCoords: [number, number] = useMemo(() => {
+    if (settings?.homeLongitude && settings?.homeLatitude) {
+      return [settings.homeLongitude, settings.homeLatitude];
+    }
+    return [-90.5785, 44.3984];
+  }, [settings]);
+
+  const handleOpenTalkgroup = (tgId: number) => {
+    setInspectedTalkgroupId(tgId);
+    setActiveDrawer("talkgroups");
+  };
+
+  const handleUpdateReceiver = (updated: Receiver) => {
+    setData((curr) => ({
+      ...curr,
+      receivers: [...curr.receivers.filter((r) => r.id !== updated.id), updated],
+    }));
+  };
+
+  const handleRemoveReceiver = (id: string) => {
+    setData((curr) => ({
+      ...curr,
+      receivers: curr.receivers.filter((r) => r.id !== id),
+    }));
+  };
+
+  if (!authReady) {
+    return (
+      <main className="login-shell">
+        <div className="login-card">
+          <div className="brand">
+            <span className="brand-mark">⌁</span>
+            <span>TRUNKSCOPE</span>
+          </div>
+          <p className="loading-text">Initializing Tactical Console…</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (setupRequired) {
+    return <SetupView onComplete={() => window.location.reload()} />;
+  }
+
+  if (authRequired && !session) {
+    return <LoginView onLogin={setSession} />;
+  }
+
+  return (
+    <div className="tactical-app-root">
+      {/* Top Header Controls */}
+      <Header
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        selectedCategory={selectedCategory}
+        onSelectCategory={setSelectedCategory}
+        categoryCounts={categoryCounts}
+        totalCalls={data.calls.length}
+        volume={volume}
+        onVolumeChange={setVolume}
+        muted={muted}
+        onToggleMute={() => setMuted((v) => !v)}
+        autoPlay={autoPlay}
+        onToggleAutoPlay={() => setAutoPlay((v) => !v)}
+        runtime={runtime}
+        diagnostics={diagnostics}
+        onOpenDrawer={setActiveDrawer}
+        onLogout={() => void logout().finally(() => setSession(undefined))}
+        username={session?.username}
+      />
+
+      {/* Main Full-Screen Map Console */}
+      <main className="tactical-map-viewport">
+        <MapConsole
+          calls={filteredCalls}
+          selectedCall={selectedCall}
+          volume={muted ? 0 : volume}
+          homeCenter={homeCoords}
+          onSelectCall={setSelectedCall}
+          onOpenTalkgroup={handleOpenTalkgroup}
+        />
+
+        {/* Floating Live Feed HUD Overlay */}
+        <LiveFeedHUD
+          calls={filteredCalls}
+          selectedCallId={selectedCall?.id}
+          volume={muted ? 0 : volume}
+          onSelectCall={setSelectedCall}
+          onOpenTalkgroup={handleOpenTalkgroup}
+        />
+      </main>
+
+      {/* Drawers */}
+      <OperationsDrawer
+        isOpen={activeDrawer === "operations"}
+        onClose={() => setActiveDrawer(null)}
+        refreshMinutes={settings?.summaryRefreshMinutes ?? 15}
+      />
+
+      <TalkgroupDrawer
+        isOpen={activeDrawer === "talkgroups"}
+        onClose={() => {
+          setActiveDrawer(null);
+          setInspectedTalkgroupId(undefined);
+        }}
+        calls={data.calls}
+        selectedTalkgroupId={inspectedTalkgroupId}
+        onSelectCall={setSelectedCall}
+        volume={muted ? 0 : volume}
+      />
+
+      <ArchiveDrawer
+        isOpen={activeDrawer === "archive"}
+        onClose={() => setActiveDrawer(null)}
+        calls={data.calls}
+        onSelectCall={setSelectedCall}
+      />
+
+      <ApplianceDrawer
+        isOpen={activeDrawer === "appliance"}
+        onClose={() => setActiveDrawer(null)}
+        snapshot={data}
+        onUpdateReceiver={handleUpdateReceiver}
+        onRemoveReceiver={handleRemoveReceiver}
+      />
+    </div>
+  );
+}
+
+function SetupView({ onComplete }: { onComplete: () => void }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await setupAdmin(username, password);
+      onComplete();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Setup failed");
+    }
+  };
+
+  return (
+    <main className="login-shell">
+      <form className="login-card" onSubmit={submit}>
+        <div className="brand">
+          <span className="brand-mark">⌁</span>
+          <span>TRUNKSCOPE</span>
+        </div>
+        <p className="eyebrow">FIRST-RUN SECURITY</p>
+        <h1>Create Administrator</h1>
+        <p className="settings-help">
+          Configure initial appliance credentials for receivers, AI, and storage access.
+        </p>
+        <label>
+          Username
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+          />
+        </label>
+        <label>
+          Password (min 12 characters)
+          <input
+            type="password"
+            minLength={12}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+          />
+        </label>
+        {error && <div className="notice error">{error}</div>}
+        <button className="primary-btn submit-btn" type="submit">
+          INITIALIZE APPLIANCE
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function LoginView({ onLogin }: { onLogin: (session: { username: string; role: string }) => void }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    try {
+      onLogin(await login(username, password));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign-in failed");
+    }
+  };
+
+  return (
+    <main className="login-shell">
+      <form className="login-card" onSubmit={submit}>
+        <div className="brand">
+          <span className="brand-mark">⌁</span>
+          <span>TRUNKSCOPE</span>
+        </div>
+        <p className="eyebrow">TACTICAL SCANNER</p>
+        <h1>Sign In</h1>
+        <label>
+          Username
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+          />
+        </label>
+        <label>
+          Password
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+          />
+        </label>
+        {error && <div className="notice error">{error}</div>}
+        <button className="primary-btn submit-btn" type="submit">
+          ENTER CONSOLE
+        </button>
+      </form>
+    </main>
+  );
 }
