@@ -73,7 +73,12 @@ Optional `TRUNKSCOPE_DATABASE_URL` enables a **legacy Postgres mirror** for the 
 - Receiver / Soapy device settings
 - NAC and control channel lists
 
-Written to `audio/decoder/config.json` on startup and after profile changes.
+Written to `audio/decoder/config.json` on startup and after profile changes, and reloaded automatically (see `apply.rs`). Multi-channel behavior:
+
+- Trunk Recorder monitors **every planned channel inside a source's coverage simultaneously** — there is no scanning. Conventional channels get dedicated recorders; trunked calls draw from the source's `digitalRecorders` (default 6) / `analogRecorders` (default 4) pools, overridable per receiver.
+- Global knobs: `minDuration 1.0` (drops squelch flutter), `maxDuration 3600`, `controlRetuneLimit` sized to the largest control-channel plan, `compressWav true`, and a `filenameFormat` that organizes recordings under `{short_name}/{date}/`.
+- Call ingestion is idempotent: the status WebSocket, upload script, and sidecar poller may all deliver the same call — audio-path aliasing merges them into one call and the AI pipeline runs exactly once.
+- Audio playback resolves recording paths against the configured `TRUNKSCOPE_CALLS_PATH` (plus the documented default root), so custom roots never orphan recordings.
 
 ## AI provider layer
 

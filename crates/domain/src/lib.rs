@@ -29,6 +29,15 @@ pub struct Receiver {
     /// each call. Useful for SDRs with drifting clocks (RTL-SDR).
     #[serde(default)]
     pub auto_tune: Option<bool>,
+    /// Simultaneous digital calls this source can record at once
+    /// (Trunk Recorder `digitalRecorders`). Defaults to 6 when unset.
+    #[serde(default)]
+    pub digital_recorders: Option<u32>,
+    /// Simultaneous analog trunked calls this source can record at once
+    /// (Trunk Recorder `analogRecorders`). Conventional channels get
+    /// dedicated recorders and do not consume this pool.
+    #[serde(default)]
+    pub analog_recorders: Option<u32>,
     pub capabilities: ReceiverCapabilities,
     pub health: ReceiverHealth,
 }

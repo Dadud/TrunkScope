@@ -8,9 +8,9 @@ Open **Console** (gear icon) → tabs:
 
 | Tab | Contents |
 |-----|----------|
-| **Sources** | Capture mode, device defaults, SDR receivers (presets, auto-tune), site filter |
+| **Sources** | Capture mode, device defaults, SDR receivers (presets, auto-tune, recorder pools), site filter |
 | **Systems** | P25 / FM profiles, per-system talkgroups, site editor, CSV import, MDC decode |
-| **Scanning** | FM scan lists (radiod mode only) |
+| **Monitoring** | Live coverage view (decoder mode); legacy FM scan lists (radiod mode only) |
 | **AI & Integrations** | Providers, API keys, Discord, retention |
 | **Policy** | Public feed allowlist and privacy |
 | **Diagnostics** | Runtime state, decoder config preview, forced apply |

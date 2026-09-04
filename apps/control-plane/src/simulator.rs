@@ -25,6 +25,8 @@ pub fn spawn(state: Arc<AppState>) {
         role: trunkscope_domain::ReceiverRole::General,
         soapy_index: Some(0),
         auto_tune: None,
+        digital_recorders: None,
+        analog_recorders: None,
         capabilities: ReceiverCapabilities {
             minimum_frequency_hz: 24_000_000,
             maximum_frequency_hz: 1_766_000_000,

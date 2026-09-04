@@ -14,6 +14,8 @@ export interface Receiver {
   role?: "general" | "p25" | "analog";
   soapyIndex?: number;
   autoTune?: boolean;
+  digitalRecorders?: number;
+  analogRecorders?: number;
   capabilities?: {
     minimumFrequencyHz: number;
     maximumFrequencyHz: number;

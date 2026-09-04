@@ -1,5 +1,5 @@
-use std::{
-    collections::{HashMap, VecDeque},
+﻿use std::{
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         Mutex, RwLock,
@@ -416,6 +416,14 @@ pub struct AppState {
     pub config_generation: AtomicU64,
     pub applied_generation: AtomicU64,
     pub force_apply: AtomicBool,
+    /// Maps a recording's audio path to the call UUID it belongs to, so the
+    /// same Trunk Recorder recording delivered via the status socket, the
+    /// upload script, and the sidecar poller converges on a single call
+    /// instead of splintering into duplicates.
+    pub audio_alias: Mutex<HashMap<String, uuid::Uuid>>,
+    /// Calls already handed to the AI pipeline. The same call_end can arrive
+    /// through three ingestion paths; transcription must run once.
+    pub enqueued_calls: Mutex<HashSet<uuid::Uuid>>,
 }
 
 impl AppState {
@@ -432,6 +440,47 @@ impl AppState {
         self.config_generation.load(Ordering::SeqCst)
             > self.applied_generation.load(Ordering::SeqCst)
     }
+
+    /// Looks up which call a recording path belongs to. Paths are matched
+    /// verbatim and by file stem, because Trunk Recorder may report the wav
+    /// path while a sidecar only knows the JSON path (or vice versa).
+    pub fn resolve_call_for_audio(&self, path: &str) -> Option<uuid::Uuid> {
+        let alias = self.audio_alias.lock().expect("audio alias lock poisoned");
+        if let Some(id) = alias.get(path) {
+            return Some(*id);
+        }
+        let stem = stem_of(path);
+        alias
+            .iter()
+            .find(|(known, _)| stem_of(known) == stem)
+            .map(|(_, id)| *id)
+    }
+
+    pub fn remember_audio(&self, path: &str, id: uuid::Uuid) {
+        let mut alias = self.audio_alias.lock().expect("audio alias lock poisoned");
+        if alias.len() >= 10_000 {
+            alias.clear();
+        }
+        alias.insert(path.to_string(), id);
+    }
+
+    /// Returns true the first time a completed call is seen, so the AI
+    /// pipeline runs exactly once no matter how many ingestion paths deliver
+    /// the same call_end.
+    pub fn mark_call_enqueued(&self, id: uuid::Uuid) -> bool {
+        let mut enqueued = self.enqueued_calls.lock().expect("enqueued lock poisoned");
+        if enqueued.len() >= 10_000 {
+            enqueued.clear();
+        }
+        enqueued.insert(id)
+    }
+}
+
+fn stem_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string())
 }
 
 impl AppState {
@@ -682,6 +731,8 @@ impl AppState {
             config_generation: AtomicU64::new(0),
             applied_generation: AtomicU64::new(0),
             force_apply: AtomicBool::new(false),
+            audio_alias: Mutex::new(HashMap::new()),
+            enqueued_calls: Mutex::new(HashSet::new()),
             processing_receiver: Mutex::new(Some(processing_receiver)),
             ai_worker_status: RwLock::new("disabled".into()),
             ai_last_error: RwLock::new(None),

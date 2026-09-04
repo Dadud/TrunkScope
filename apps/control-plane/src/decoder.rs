@@ -214,7 +214,11 @@ fn apply_status(state: &AppState, event: StatusEvent) {
         Some(call) if ended => {
             update_receiver_health(state, &call, &decoder_call);
             state.upsert_call(call.clone(), CallEvent::Ended(call.clone()));
-            state.enqueue_processing(call);
+            // The same call_end reaches us via the status socket, the upload
+            // script, and the sidecar poller; the AI pipeline must run once.
+            if state.mark_call_enqueued(call.id) {
+                state.enqueue_processing(call);
+            }
         }
         Some(call) => {
             update_receiver_health(state, &call, &decoder_call);
@@ -277,13 +281,6 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
     if !tone_allowed {
         return None;
     }
-    let call_id = {
-        let mut calls = state
-            .decoder_calls
-            .write()
-            .expect("decoder call lock poisoned");
-        *calls.entry(source_id).or_insert_with(Uuid::new_v4)
-    };
     let short_name = source.short_name.value();
     let system_name = if short_name.is_empty() {
         "P25 system".to_string()
@@ -317,6 +314,29 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
     } else {
         Some(format!("/var/lib/trunkscope/calls/{filename}"))
     };
+
+    // A recording must map to exactly one call no matter which ingestion path
+    // delivers it. The audio path is the stable identity: the status socket
+    // knows TR's call id, while sidecars only know the filename.
+    let call_id = match audio_path
+        .as_ref()
+        .and_then(|path| state.resolve_call_for_audio(path))
+    {
+        Some(existing) => existing,
+        None => {
+            let mut calls = state
+                .decoder_calls
+                .write()
+                .expect("decoder call lock poisoned");
+            if calls.len() >= 10_000 {
+                calls.clear();
+            }
+            *calls.entry(source_id).or_insert_with(Uuid::new_v4)
+        }
+    };
+    if let Some(path) = audio_path.as_ref() {
+        state.remember_audio(path, call_id);
+    }
 
     Some(Call {
         id: call_id,
@@ -407,6 +427,51 @@ mod tests {
         let calls = state.calls.read().unwrap();
         assert_eq!(calls[0].encryption, EncryptionState::Encrypted);
         assert!(calls[0].audio.is_none());
+    }
+
+    #[test]
+    fn same_call_end_delivered_twice_enqueues_ai_once() {
+        let state = AppState::new();
+        let payload = r#"{"type":"call_end","call":{"id":"call-dup","freq":"851012500","shortName":"Metro","talkgroup":"1001","startTime":"1515575009","stopTime":"1515575018","filename":"dup.wav"}}"#;
+        apply_status(
+            &state,
+            serde_json::from_str::<StatusEvent>(payload).unwrap(),
+        );
+        apply_status(
+            &state,
+            serde_json::from_str::<StatusEvent>(payload).unwrap(),
+        );
+        let mut receiver = state
+            .processing_receiver
+            .lock()
+            .unwrap()
+            .take()
+            .expect("processing receiver present in tests");
+        let mut delivered = 0;
+        while receiver.try_recv().is_ok() {
+            delivered += 1;
+        }
+        assert_eq!(delivered, 1, "duplicate call_end must not re-enqueue AI");
+    }
+
+    #[test]
+    fn sidecar_with_unknown_id_joins_the_call_via_audio_path() {
+        let state = AppState::new();
+        let start: StatusEvent = serde_json::from_str(
+            r#"{"type":"call_start","call":{"id":"0_1001_1732","freq":"851012500","shortName":"Metro","talkgroup":"1001","startTime":"1515575009","filename":"fm-9.wav"}}"#,
+        )
+        .unwrap();
+        apply_status(&state, start);
+        // The sidecar poller synthesizes a different TR id for the same wav.
+        let end: StatusEvent = serde_json::from_str(
+            r#"{"type":"call_end","call":{"id":"fm-9","freq":"851012500","shortName":"Metro","talkgroup":"1001","startTime":"1515575009","stopTime":"1515575018","filename":"fm-9.wav"}}"#,
+        )
+        .unwrap();
+        apply_status(&state, end);
+        let calls = state.calls.read().unwrap();
+        assert_eq!(calls.len(), 1, "audio path must merge the two events");
+        assert_eq!(calls[0].state, CallState::Complete);
+        assert!(calls[0].audio.is_some());
     }
 
     #[test]

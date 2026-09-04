@@ -16,6 +16,7 @@ pub fn spawn(state: Arc<AppState>) {
             .unwrap_or_else(|_| "/var/lib/trunkscope/calls".into());
         let mut seen = HashSet::<PathBuf>::new();
         let mut initialized = false;
+        let baseline = std::time::SystemTime::now();
         loop {
             let mut files = Vec::new();
             collect_json(Path::new(&root), &mut files);
@@ -37,6 +38,17 @@ pub fn spawn(state: Arc<AppState>) {
                 if seen.contains(&path) {
                     continue;
                 }
+                // When the seen set is trimmed, historical sidecars would be
+                // replayed; the mtime gate keeps pre-baseline files excluded
+                // no matter how large the volume grows.
+                let new_enough = std::fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .map(|modified| modified > baseline)
+                    .unwrap_or(false);
+                if !new_enough {
+                    seen.insert(path);
+                    continue;
+                }
                 let Ok(payload) = tokio::fs::read_to_string(&path).await else {
                     continue;
                 };
@@ -46,8 +58,9 @@ pub fn spawn(state: Arc<AppState>) {
                     seen.insert(path);
                 }
             }
-            // Keep memory bounded across long-running appliances while still
-            // avoiding duplicate sidecar ingestion.
+            // Keep memory bounded across long-running appliances. Replay of
+            // trimmed entries is harmless now: pre-baseline files fail the
+            // mtime gate and completed calls are deduplicated downstream.
             if seen.len() > 10_000 {
                 seen.clear();
             }

@@ -71,7 +71,7 @@ interface ApplianceDrawerProps {
   onRemoveReceiver: (id: string) => void;
 }
 
-type Tab = "sources" | "systems" | "scanning" | "integrations" | "policy" | "security" | "diagnostics";
+type Tab = "sources" | "systems" | "monitoring" | "integrations" | "policy" | "security" | "diagnostics";
 
 const DRIVER_OPTIONS: Array<{ value: ReceiverInput["driver"]; label: string }> = [
   { value: "sdrplay", label: "SDRplay RSP" },
@@ -139,6 +139,8 @@ export function ApplianceDrawer({
     role: "general",
     soapyIndex: 0,
     autoTune: false,
+    digitalRecorders: 6,
+    analogRecorders: 4,
   });
   const [discoveredDevices, setDiscoveredDevices] = useState<Awaited<ReturnType<typeof discoverReceivers>>>([]);
   const [devicePresets, setDevicePresets] = useState<ReceiverDevicePreset[]>([]);
@@ -493,10 +495,10 @@ export function ApplianceDrawer({
           </button>
           <button
             type="button"
-            className={activeTab === "scanning" ? "active" : ""}
-            onClick={() => setActiveTab("scanning")}
+            className={activeTab === "monitoring" ? "active" : ""}
+            onClick={() => setActiveTab("monitoring")}
           >
-            📻 SCANNING
+            🎧 MONITORING
           </button>
           <button type="button" className={activeTab === "integrations" ? "active" : ""} onClick={() => setActiveTab("integrations")}>🤖 AI & INTEGRATIONS</button>
           <button type="button" className={activeTab === "policy" ? "active" : ""} onClick={() => setActiveTab("policy")}>🌐 POLICY</button>
@@ -562,6 +564,8 @@ export function ApplianceDrawer({
                           role: "general",
                           soapyIndex: 0,
                           autoTune: false,
+                          digitalRecorders: 6,
+                          analogRecorders: 4,
                         });
                         setSubmodelId(submodel?.id ?? "");
                       }
@@ -704,6 +708,28 @@ export function ApplianceDrawer({
                         }
                       /> Auto-tune PPM
                     </label>
+                    <label title="Simultaneous digital (P25) calls this source can record">
+                      Digital recorders
+                      <input
+                        type="number"
+                        min={0}
+                        value={receiverDraft.digitalRecorders ?? 6}
+                        onChange={(e) =>
+                          setReceiverDraft({ ...receiverDraft, digitalRecorders: Number(e.target.value) })
+                        }
+                      />
+                    </label>
+                    <label title="Simultaneous analog trunked calls; conventional channels get dedicated recorders">
+                      Analog recorders
+                      <input
+                        type="number"
+                        min={0}
+                        value={receiverDraft.analogRecorders ?? 4}
+                        onChange={(e) =>
+                          setReceiverDraft({ ...receiverDraft, analogRecorders: Number(e.target.value) })
+                        }
+                      />
+                    </label>
                     <label>
                       Gain (dB)
                       <input
@@ -796,6 +822,8 @@ export function ApplianceDrawer({
                             role: r.role ?? "general",
                             soapyIndex: r.soapyIndex ?? 0,
                             autoTune: r.autoTune ?? false,
+                            digitalRecorders: r.digitalRecorders ?? 6,
+                            analogRecorders: r.analogRecorders ?? 4,
                           });
                         }}
                       >
@@ -874,16 +902,76 @@ export function ApplianceDrawer({
             </div>
           )}
 
-          {/* SCANNING TAB */}
-          {activeTab === "scanning" && (
+          {/* MONITORING TAB */}
+          {activeTab === "monitoring" && settings && settings.radioMode !== "radiod" && (
+            <div className="tab-pane">
+              <h3>Channel Monitoring</h3>
+              <p className="pane-desc">
+                Trunk Recorder does not scan — every planned channel inside a source's coverage is recorded simultaneously, limited by that source's recorder pool.
+              </p>
+              {diagnostics && (
+                <div className="config-box">
+                  <span>Decoder: {diagnostics.decoder.state} — {diagnostics.decoder.detail}</span>
+                  <span>Heartbeat: {diagnostics.decoderHeartbeatAgeSeconds != null ? `${diagnostics.decoderHeartbeatAgeSeconds}s ago` : "none"}</span>
+                  <span>Recording: {diagnostics.recording.state}</span>
+                </div>
+              )}
+              {snapshot.receivers.filter((receiver) => receiver.enabled !== false).map((receiver) => {
+                const center = receiver.centerFrequencyHz ?? settings.radioFrequencyHz;
+                const rate = receiver.sampleRateHz ?? settings.radioSampleRateHz;
+                const lowHz = Math.max(0, center - rate / 2);
+                const highHz = center + rate / 2;
+                const inCoverage = systems.flatMap((sys) => {
+                  const channels: Array<{ label: string; hz: number; tone?: string }> = [];
+                  if (sys.protocol === "p25") {
+                    (sys.controlChannelsHz?.length ? sys.controlChannelsHz : sys.controlChannelHz ? [sys.controlChannelHz] : [])
+                      .forEach((hz) => channels.push({ label: `${sys.name} control`, hz }));
+                    (sys.sites ?? []).forEach((site) =>
+                      site.controlChannelsHz.forEach((hz) =>
+                        channels.push({ label: `${sys.name} · ${site.name}`, hz }),
+                      ),
+                    );
+                  } else if (sys.frequencyHz) {
+                    channels.push({ label: sys.name, hz: sys.frequencyHz, tone: sys.tone });
+                  }
+                  return channels.filter((channel) => channel.hz >= lowHz && channel.hz <= highHz);
+                });
+                return (
+                  <div key={receiver.id} className="config-box">
+                    <div className="box-header">
+                      <strong>{receiver.label}</strong>
+                      <span>Center: {formatFrequency(center)}</span>
+                      <span>Rate: {(rate / 1e6).toFixed(2)} MHz</span>
+                      <span>Coverage: {formatFrequency(lowHz)} – {formatFrequency(highHz)}</span>
+                      <span>Recorders: {receiver.digitalRecorders ?? 6} digital / {receiver.analogRecorders ?? 4} analog</span>
+                    </div>
+                    {inCoverage.length === 0 ? (
+                      <p className="pane-desc warning">No planned channels fall inside this source's coverage. Add systems or widen the sample rate.</p>
+                    ) : (
+                      <div className="btn-row">
+                        {inCoverage.map((channel) => (
+                          <span key={`${channel.label}-${channel.hz}`}>
+                            {formatFrequency(channel.hz)} · {channel.label}{channel.tone ? ` · PL ${channel.tone}` : ""}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {systems.length === 0 && (
+                <p className="pane-desc">No systems configured yet — add them under Systems to build the monitoring plan.</p>
+              )}
+            </div>
+          )}
+
+          {/* SCANNING (radiod legacy) */}
+          {activeTab === "monitoring" && settings && settings.radioMode === "radiod" && (
             <div className="tab-pane">
               <h3>FM Conventional Scan Lists</h3>
               <p className="pane-desc">
-                Configure analog frequencies, squelch thresholds, and CTCSS/DCS tone lockouts. Scan lists run only in <strong>radiod</strong> capture mode — switch modes under Sources.
+                Configure analog frequencies, squelch thresholds, and CTCSS/DCS tone lockouts. Scan lists are a <strong>radiod</strong>-mode legacy feature — Trunk Recorder monitors the whole channel plan at once.
               </p>
-              {settings && settings.radioMode !== "radiod" && (
-                <p className="pane-desc warning">Current capture mode is <strong>{settings.radioMode}</strong>: these lists are configured but not being scanned right now.</p>
-              )}
 
               <div className="scanlist-container">
                 {scanLists.map((list) => (

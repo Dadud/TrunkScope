@@ -531,8 +531,8 @@ fn build_decoder_source(
         "error": receiver.ppm,
         "gain": gain,
         "gainSettings": receiver_presets::default_gain_settings(receiver.driver, gain),
-        "digitalRecorders": if has_p25 { 4 } else { 0 },
-        "analogRecorders": if has_analog { 2 } else { 0 },
+        "digitalRecorders": if has_p25 { receiver.digital_recorders.unwrap_or(6) } else { 0 },
+        "analogRecorders": if has_analog { receiver.analog_recorders.unwrap_or(4) } else { 0 },
         "driver": "osmosdr",
         "device": receiver_presets::device_string(receiver, &settings.radio_device, index),
     });
@@ -591,8 +591,8 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
             "error": settings.radio_ppm,
             "gain": gain,
             "gainSettings": receiver_presets::default_gain_settings(ReceiverDriver::Sdrplay, gain),
-            "digitalRecorders": 4,
-            "analogRecorders": 2,
+            "digitalRecorders": 6,
+            "analogRecorders": 4,
             "driver": "osmosdr",
             "device": source_device,
         }));
@@ -709,10 +709,23 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         configured_systems.push(conventional);
     }
     let status_server = decoder_status_server();
+    // controlRetuneLimit lets Trunk Recorder cycle through every alternate
+    // control channel before giving up; it should cover the largest plan.
+    let control_retune_limit = systems
+        .iter()
+        .filter(|system| system.protocol == "p25")
+        .map(|system| p25_control_channels(system, site_filter.as_deref()).len())
+        .max()
+        .unwrap_or(0);
     serde_json::json!({
         "ver": 2, "captureDir": "/var/lib/trunkscope/calls",
         "statusServer": status_server,
         "audioArchive": true, "callLog": true, "softVocoder": true,
+        // Squelch flutter shorter than a second is noise, not a call.
+        "minDuration": 1.0, "maxDuration": 3600,
+        "compressWav": true, "frequencyFormat": "mhz",
+        "filenameFormat": "{short_name}/{ztime:%Y}-{ztime:%m}-{ztime:%d}/{talkgroup}-{epoch}_{freq_mhz}",
+        "controlRetuneLimit": control_retune_limit,
         "sources": sources, "systems": configured_systems,
     })
 }
@@ -1156,6 +1169,10 @@ struct ReceiverInput {
     soapy_index: Option<u32>,
     #[serde(default)]
     auto_tune: Option<bool>,
+    #[serde(default)]
+    digital_recorders: Option<u32>,
+    #[serde(default)]
+    analog_recorders: Option<u32>,
 }
 
 fn default_receiver_enabled() -> bool {
@@ -1177,6 +1194,8 @@ fn receiver_from_input(input: ReceiverInput, id: uuid::Uuid) -> Receiver {
         role: input.role,
         soapy_index: input.soapy_index,
         auto_tune: input.auto_tune,
+        digital_recorders: input.digital_recorders,
+        analog_recorders: input.analog_recorders,
         capabilities: receiver_presets::default_capabilities(input.driver),
         health: ReceiverHealth {
             signal_dbfs: -120.0,
@@ -1875,11 +1894,9 @@ async fn conversation_audio(
     }
     let mut wavs = Vec::new();
     for object_key in object_keys {
-        let relative = object_key.trim_start_matches("/var/lib/trunkscope/calls/");
-        let path = root.join(relative);
-        if !path.starts_with(&root) {
+        let Some(path) = resolve_audio_object_key(&root, &object_key) else {
             continue;
-        }
+        };
         if let Ok(bytes) = tokio::fs::read(path).await {
             wavs.push(bytes);
         }
@@ -2483,13 +2500,9 @@ async fn audio(
         std::env::var("TRUNKSCOPE_CALLS_PATH")
             .unwrap_or_else(|_| "/var/lib/trunkscope/calls".into()),
     );
-    let relative = asset
-        .object_key
-        .trim_start_matches("/var/lib/trunkscope/calls/");
-    let path = root.join(relative);
-    if !path.starts_with(&root) {
+    let Some(path) = resolve_audio_object_key(&root, &asset.object_key) else {
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
     match tokio::fs::read(path).await {
         Ok(bytes) => {
             let total = bytes.len();
@@ -2520,6 +2533,34 @@ async fn audio(
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// Resolves a stored audio object key against the configured calls root.
+/// Keys may be absolute (Trunk Recorder filenames) or relative; absolute keys
+/// are accepted under the configured root or the documented default root so a
+/// customized TRUNKSCOPE_CALLS_PATH never orphans existing recordings.
+fn resolve_audio_object_key(root: &std::path::Path, key: &str) -> Option<std::path::PathBuf> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidate = std::path::Path::new(trimmed);
+    let relative: std::path::PathBuf = if candidate.is_absolute() {
+        candidate
+            .strip_prefix(root)
+            .or_else(|_| candidate.strip_prefix("/var/lib/trunkscope/calls"))
+            .ok()?
+            .to_path_buf()
+    } else {
+        candidate.to_path_buf()
+    };
+    if relative
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(root.join(relative))
 }
 
 fn parse_range(value: &str, total: usize) -> Option<(usize, usize)> {
@@ -3413,6 +3454,29 @@ mod tests {
 
     fn test_state() -> Arc<AppState> {
         let state = Arc::new(AppState::new());
+        // AppState::new() hydrates from the real (env/default) state paths,
+        // and API tests legitimately write through those paths. Wipe the
+        // hydrated copies so every test starts from a clean plan.
+        state
+            .systems
+            .write()
+            .expect("systems lock poisoned")
+            .clear();
+        state
+            .receivers
+            .write()
+            .expect("receiver lock poisoned")
+            .clear();
+        state
+            .talkgroups
+            .write()
+            .expect("talkgroup lock poisoned")
+            .clear();
+        state
+            .scan_lists
+            .write()
+            .expect("scan list lock poisoned")
+            .clear();
         state
             .sessions
             .write()
@@ -3479,6 +3543,99 @@ mod tests {
             "BLACKRIVER"
         );
         assert_eq!(sanitize_short_name("///"), "SYSTEM");
+    }
+
+    #[test]
+    fn decoder_config_carries_multi_channel_and_retune_settings() {
+        let state = test_state();
+        state.systems.write().unwrap().push(SystemProfile {
+            id: uuid::Uuid::new_v4(),
+            name: "VHF P25".into(),
+            protocol: "p25".into(),
+            control_channel_hz: Some(152_112_500),
+            control_channels_hz: vec![152_112_500, 152_217_500],
+            nac: Some(0xB00),
+            frequency_hz: None,
+            bandwidth_hz: None,
+            modulation: None,
+            squelch_db: None,
+            tone: None,
+            deviation_hz: None,
+            step_hz: None,
+            dwell_ms: None,
+            sites: Vec::new(),
+            receiver_id: None,
+            decode_mdc: None,
+        });
+        let config = decoder_config_value(&state);
+        assert_eq!(config["minDuration"], 1.0);
+        assert_eq!(config["maxDuration"], 3600);
+        assert_eq!(config["compressWav"], true);
+        assert_eq!(config["controlRetuneLimit"], 2);
+        assert!(
+            config["filenameFormat"]
+                .as_str()
+                .unwrap()
+                .starts_with("{short_name}/")
+        );
+        let sources = config["sources"].as_array().unwrap();
+        assert_eq!(sources[0]["digitalRecorders"], 6);
+        assert_eq!(sources[0]["analogRecorders"], 4);
+    }
+
+    #[test]
+    fn receiver_recorder_overrides_reach_trunk_recorder_sources() {
+        let state = test_state();
+        state.systems.write().unwrap().push(SystemProfile {
+            id: uuid::Uuid::new_v4(),
+            name: "VHF P25".into(),
+            protocol: "p25".into(),
+            control_channel_hz: Some(152_112_500),
+            control_channels_hz: vec![],
+            nac: Some(0xB00),
+            frequency_hz: None,
+            bandwidth_hz: None,
+            modulation: None,
+            squelch_db: None,
+            tone: None,
+            deviation_hz: None,
+            step_hz: None,
+            dwell_ms: None,
+            sites: Vec::new(),
+            receiver_id: None,
+            decode_mdc: None,
+        });
+        state.receivers.write().unwrap().push(Receiver {
+            id: uuid::Uuid::new_v4(),
+            label: "Override RSP".into(),
+            driver: ReceiverDriver::Sdrplay,
+            serial: "driver=sdrplay".into(),
+            state: ReceiverState::Stopped,
+            center_frequency_hz: Some(154_000_000),
+            sample_rate_hz: Some(4_000_000),
+            gain_db: Some(40.0),
+            ppm: 0.0,
+            enabled: true,
+            role: ReceiverRole::General,
+            soapy_index: Some(0),
+            auto_tune: None,
+            digital_recorders: Some(12),
+            analog_recorders: None,
+            capabilities: receiver_presets::default_capabilities(ReceiverDriver::Sdrplay),
+            health: ReceiverHealth {
+                signal_dbfs: -120.0,
+                noise_dbfs: -120.0,
+                frequency_error_hz: 0.0,
+                dropped_samples: 0,
+                updated_at: chrono::Utc::now(),
+            },
+        });
+        let config = decoder_config_value(&state);
+        let sources = config["sources"].as_array().unwrap();
+        assert_eq!(sources[0]["digitalRecorders"], 12);
+        // No analog systems assigned: conventional channels use dedicated
+        // recorders, so the analog pool stays empty.
+        assert_eq!(sources[0]["analogRecorders"], 0);
     }
 
     #[tokio::test]
@@ -3570,6 +3727,8 @@ mod tests {
                 role: ReceiverRole::P25,
                 soapy_index: Some(0),
                 auto_tune: None,
+                digital_recorders: None,
+                analog_recorders: None,
                 capabilities: receiver_presets::default_capabilities(ReceiverDriver::RtlSdr),
                 health: ReceiverHealth {
                     signal_dbfs: -120.0,
@@ -3593,6 +3752,8 @@ mod tests {
                 role: ReceiverRole::General,
                 soapy_index: Some(1),
                 auto_tune: None,
+                digital_recorders: None,
+                analog_recorders: None,
                 capabilities: receiver_presets::default_capabilities(ReceiverDriver::Airspy),
                 health: ReceiverHealth {
                     signal_dbfs: -120.0,
