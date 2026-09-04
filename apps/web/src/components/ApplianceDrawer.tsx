@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, type ChangeEvent } from "react";
+import { useState, useEffect, type ChangeEvent } from "react";
 import type { Receiver, Snapshot } from "../types";
 import {
   applyDecoderConfig,
@@ -185,6 +185,14 @@ export function ApplianceDrawer({
   const [newPassword, setNewPassword] = useState("");
 
   useEffect(() => {
+    if (!statusMessage) return;
+    // Status notes are ephemeral: a stale error bar from an old action must
+    // not read as the current state of the appliance.
+    const timer = window.setTimeout(() => setStatusMessage(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [statusMessage]);
+
+  useEffect(() => {
     if (!isOpen) return;
     getSettings().then(setSettings).catch(() => undefined);
     getScanLists().then(setScanLists).catch(() => undefined);
@@ -215,7 +223,10 @@ export function ApplianceDrawer({
     ]).then(([transcribe, summary, geocoder, discord]) => {
       setIntegrationStatus({ transcribe, summary, geocoder, discord });
     });
-  }, [isOpen]);
+    // Re-fetching per tab switch keeps every pane honest (receiver states,
+    // diagnostics, decoder config) instead of showing a snapshot from when
+    // the drawer first opened.
+  }, [isOpen, activeTab]);
 
   const refreshTranscribeModels = async () => {
     if (!settings?.transcribeUrl.trim()) {
@@ -302,7 +313,7 @@ export function ApplianceDrawer({
   if (!isOpen) return null;
 
   const handleDiscoverReceivers = async () => {
-    setStatusMessage("Scanning for USB and network SDR devicesâ€¦");
+    setStatusMessage("Scanning for USB and network SDR devices…");
     try {
       const devices = await discoverReceivers();
       setDiscoveredDevices(devices);
@@ -357,7 +368,7 @@ export function ApplianceDrawer({
 
   // Receiver actions
   const handleReceiverAction = async (id: string, action: "probe" | "start" | "stop" | "restart") => {
-    setStatusMessage(`Requesting ${action.toUpperCase()}â€¦`);
+    setStatusMessage(`Requesting ${action.toUpperCase()}…`);
     try {
       const updated = await receiverAction(id, action);
       onUpdateReceiver(updated);
@@ -372,7 +383,7 @@ export function ApplianceDrawer({
       const updated = await updateReceiver(id, receiverDraft);
       onUpdateReceiver(updated);
       setEditingReceiverId(null);
-      setStatusMessage("Receiver settings saved â€” the capture reloads automatically.");
+      setStatusMessage("Receiver settings saved — the capture reloads automatically.");
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : "Save failed");
     }
@@ -485,57 +496,69 @@ export function ApplianceDrawer({
             className={activeTab === "sources" ? "active" : ""}
             onClick={() => setActiveTab("sources")}
           >
-            ðŸ“¡ SOURCES ({snapshot.receivers.length})
+            📡 SOURCES ({snapshot.receivers.length})
           </button>
           <button
             type="button"
             className={activeTab === "systems" ? "active" : ""}
             onClick={() => setActiveTab("systems")}
           >
-            âš¡ SYSTEMS
+            ⚡ SYSTEMS
           </button>
           <button
             type="button"
             className={activeTab === "monitoring" ? "active" : ""}
             onClick={() => setActiveTab("monitoring")}
           >
-            ðŸŽ§ MONITORING
+            🎧 MONITORING
           </button>
-          <button type="button" className={activeTab === "integrations" ? "active" : ""} onClick={() => setActiveTab("integrations")}>ðŸ¤– AI & INTEGRATIONS</button>
-          <button type="button" className={activeTab === "policy" ? "active" : ""} onClick={() => setActiveTab("policy")}>ðŸŒ POLICY</button>
+          <button type="button" className={activeTab === "integrations" ? "active" : ""} onClick={() => setActiveTab("integrations")}>🤖 AI & INTEGRATIONS</button>
+          <button type="button" className={activeTab === "policy" ? "active" : ""} onClick={() => setActiveTab("policy")}>🌐 POLICY</button>
           <button
             type="button"
             className={activeTab === "security" ? "active" : ""}
             onClick={() => setActiveTab("security")}
           >
-            ðŸ”’ SECURITY
+            🔒 SECURITY
           </button>
-          <button type="button" className={activeTab === "diagnostics" ? "active" : ""} onClick={() => setActiveTab("diagnostics")}>ðŸ©º DIAGNOSTICS</button>
+          <button type="button" className={activeTab === "diagnostics" ? "active" : ""} onClick={() => setActiveTab("diagnostics")}>🩺 DIAGNOSTICS</button>
         </div>
 
-        {statusMessage && <div className="appliance-status-bar">{statusMessage}</div>}
+        {statusMessage && (
+          <div
+            className={`appliance-status-bar${/fail|error|unavailable|invalid|denied|required|\(\d{3}\)/i.test(statusMessage) ? " error" : ""}`}
+          >
+            {statusMessage}
+          </div>
+        )}
 
         <div className="appliance-body">
           {/* SOURCES TAB */}
           {activeTab === "sources" && (
             <div className="tab-pane">
               <h3>Capture Sources</h3>
-              <p className="pane-desc">Persisted settings and receivers drive decoder generation. Saves apply automatically â€” the capture reloads within a few seconds.</p>
+              <p className="pane-desc">Persisted settings and receivers drive decoder generation. Saves apply automatically — the capture reloads within a few seconds.</p>
 
               {settings && (
                 <div className="config-section">
                   <h4>Capture settings</h4>
                   <div className="form-grid">
                     <label>Capture mode<select value={settings.radioMode} onChange={(e) => setSettings({ ...settings, radioMode: e.target.value })}><option value="simulator">Simulator</option><option value="radiod">radiod (native)</option><option value="decoder">Decoder (Trunk Recorder)</option></select></label>
-                    <label>Fallback device<input value={settings.radioDevice} onChange={(e) => setSettings({ ...settings, radioDevice: e.target.value })} /></label>
-                    <label>Center frequency (MHz)<MhzField valueHz={settings.radioFrequencyHz} placeholder="154.0" onChange={(radioFrequencyHz) => setSettings({ ...settings, radioFrequencyHz })} /></label>
-                    <label>Sample rate (MHz)<MhzField valueHz={settings.radioSampleRateHz} placeholder="2.4" onChange={(radioSampleRateHz) => setSettings({ ...settings, radioSampleRateHz })} /></label>
-                    <label>Bandwidth (MHz)<MhzField valueHz={settings.radioBandwidthHz} placeholder="0.2" onChange={(value) => setSettings({ ...settings, radioBandwidthHz: value || undefined })} /></label>
-                    <label>Gain (dB)<input type="number" value={settings.radioGainDb ?? ""} onChange={(e) => setSettings({ ...settings, radioGainDb: Number(e.target.value) })} /></label>
-                    <label className="checkbox-label"><input type="checkbox" checked={settings.radioAgc} onChange={(e) => setSettings({ ...settings, radioAgc: e.target.checked })} /> AGC enabled</label>
-                    <label>PPM<input type="number" step="0.1" value={settings.radioPpm} onChange={(e) => setSettings({ ...settings, radioPpm: Number(e.target.value) })} /></label>
                     <label>Site filter<input value={settings.siteFilter ?? ""} onChange={(e) => setSettings({ ...settings, siteFilter: e.target.value })} placeholder="Black River Falls" /></label>
                   </div>
+                  <details className="fallback-details">
+                    <summary>Advanced — fallback defaults for receivers that leave a value blank</summary>
+                    <div className="form-grid">
+                      <label>Fallback device<input value={settings.radioDevice} onChange={(e) => setSettings({ ...settings, radioDevice: e.target.value })} /></label>
+                      <label>Center frequency (MHz)<MhzField valueHz={settings.radioFrequencyHz} placeholder="154.0" onChange={(radioFrequencyHz) => setSettings({ ...settings, radioFrequencyHz })} /></label>
+                      <label>Sample rate (MHz)<MhzField valueHz={settings.radioSampleRateHz} placeholder="2.4" onChange={(radioSampleRateHz) => setSettings({ ...settings, radioSampleRateHz })} /></label>
+                      <label>Bandwidth (MHz)<MhzField valueHz={settings.radioBandwidthHz} placeholder="0.2" onChange={(value) => setSettings({ ...settings, radioBandwidthHz: value || undefined })} /></label>
+                      <label>Gain (dB)<input type="number" value={settings.radioGainDb ?? ""} onChange={(e) => setSettings({ ...settings, radioGainDb: Number(e.target.value) })} /></label>
+                      <label className="checkbox-label"><input type="checkbox" checked={settings.radioAgc} onChange={(e) => setSettings({ ...settings, radioAgc: e.target.checked })} /> AGC enabled</label>
+                      <label>PPM<input type="number" step="0.1" value={settings.radioPpm} onChange={(e) => setSettings({ ...settings, radioPpm: Number(e.target.value) })} /></label>
+                    </div>
+                    <small className="pane-desc">Receivers set their own RF below — these only fill gaps. Empty spectrum comes from a receiver tuned off-plan, not from these.</small>
+                  </details>
                   <button type="button" className="primary-btn" onClick={handleSaveSettings}>Save capture settings</button>
                 </div>
               )}
@@ -921,11 +944,11 @@ export function ApplianceDrawer({
             <div className="tab-pane">
               <h3>Channel Monitoring</h3>
               <p className="pane-desc">
-                Trunk Recorder does not scan â€” every planned channel inside a source's coverage is recorded simultaneously, limited by that source's recorder pool.
+                Trunk Recorder does not scan — every planned channel inside a source's coverage is recorded simultaneously, limited by that source's recorder pool.
               </p>
               {diagnostics && (
                 <div className="config-box">
-                  <span>Decoder: {diagnostics.decoder.state} â€” {diagnostics.decoder.detail}</span>
+                  <span>Decoder: {diagnostics.decoder.state} — {diagnostics.decoder.detail}</span>
                   <span>Heartbeat: {diagnostics.decoderHeartbeatAgeSeconds != null ? `${diagnostics.decoderHeartbeatAgeSeconds}s ago` : "none"}</span>
                   <span>Recording: {diagnostics.recording.state}</span>
                 </div>
@@ -942,7 +965,7 @@ export function ApplianceDrawer({
                       .forEach((hz) => channels.push({ label: `${sys.name} control`, hz }));
                     (sys.sites ?? []).forEach((site) =>
                       site.controlChannelsHz.forEach((hz) =>
-                        channels.push({ label: `${sys.name} Â· ${site.name}`, hz }),
+                        channels.push({ label: `${sys.name} · ${site.name}`, hz }),
                       ),
                     );
                   } else if (sys.frequencyHz) {
@@ -956,7 +979,7 @@ export function ApplianceDrawer({
                       <strong>{receiver.label}</strong>
                       <span>Center: {formatFrequency(center)}</span>
                       <span>Rate: {(rate / 1e6).toFixed(2)} MHz</span>
-                      <span>Coverage: {formatFrequency(lowHz)} â€“ {formatFrequency(highHz)}</span>
+                      <span>Coverage: {formatFrequency(lowHz)} – {formatFrequency(highHz)}</span>
                       <span>Recorders: {receiver.digitalRecorders ?? 6} digital / {receiver.analogRecorders ?? 4} analog</span>
                     </div>
                     {inCoverage.length === 0 ? (
@@ -965,7 +988,7 @@ export function ApplianceDrawer({
                       <div className="btn-row">
                         {inCoverage.map((channel) => (
                           <span key={`${channel.label}-${channel.hz}`}>
-                            {formatFrequency(channel.hz)} Â· {channel.label}{channel.tone ? ` Â· PL ${channel.tone}` : ""}
+                            {formatFrequency(channel.hz)} · {channel.label}{channel.tone ? ` · PL ${channel.tone}` : ""}
                           </span>
                         ))}
                       </div>
@@ -974,7 +997,7 @@ export function ApplianceDrawer({
                 );
               })}
               {systems.length === 0 && (
-                <p className="pane-desc">No systems configured yet â€” add them under Systems to build the monitoring plan.</p>
+                <p className="pane-desc">No systems configured yet — add them under Systems to build the monitoring plan.</p>
               )}
             </div>
           )}
@@ -984,7 +1007,7 @@ export function ApplianceDrawer({
             <div className="tab-pane">
               <h3>FM Conventional Scan Lists</h3>
               <p className="pane-desc">
-                Configure analog frequencies, squelch thresholds, and CTCSS/DCS tone lockouts. Scan lists are a <strong>radiod</strong>-mode legacy feature â€” Trunk Recorder monitors the whole channel plan at once.
+                Configure analog frequencies, squelch thresholds, and CTCSS/DCS tone lockouts. Scan lists are a <strong>radiod</strong>-mode legacy feature — Trunk Recorder monitors the whole channel plan at once.
               </p>
 
               <div className="scanlist-container">
@@ -1165,7 +1188,7 @@ export function ApplianceDrawer({
                     {talkgroupPanelSystem === sys.id && (
                       <div className="r-edit-box">
                         {(sys.protocol !== "p25" && sys.protocol !== "dmr") && (
-                          <p className="pane-desc">Conventional FM channels do not use talkgroups â€” Trunk Recorder assigns virtual IDs automatically. Talkgroups apply to P25 systems.</p>
+                          <p className="pane-desc">Conventional FM channels do not use talkgroups — Trunk Recorder assigns virtual IDs automatically. Talkgroups apply to P25 systems.</p>
                         )}
                         {(sys.protocol === "p25" || sys.protocol === "dmr") && (
                           <>
@@ -1174,7 +1197,7 @@ export function ApplianceDrawer({
                             )}
                             {talkgroups.filter((tg) => tg.systemId === sys.id).map((tg) => (
                               <div key={tg.id} className="btn-row">
-                                <span>{tg.decimalId} Â· {tg.alphaTag} Â· {tg.mode?.toUpperCase() ?? "D"}</span>
+                                <span>{tg.decimalId} · {tg.alphaTag} · {tg.mode?.toUpperCase() ?? "D"}</span>
                                 <button type="button" onClick={() => setTalkgroupDraft(tg)}>Edit</button>
                                 <button type="button" className="danger-btn" onClick={async () => {
                                   try {
@@ -1191,10 +1214,10 @@ export function ApplianceDrawer({
                               <label>Decimal ID<input type="number" value={talkgroupDraft.decimalId} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, decimalId: Number(e.target.value) })} /></label>
                               <label>Mode
                                 <select value={talkgroupDraft.mode ?? "D"} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, mode: e.target.value })}>
-                                  <option value="D">D â€” Digital (P25)</option>
-                                  <option value="A">A â€” Analog</option>
-                                  <option value="M">M â€” Mixed</option>
-                                  <option value="T">T â€” TDMA</option>
+                                  <option value="D">D — Digital (P25)</option>
+                                  <option value="A">A — Analog</option>
+                                  <option value="M">M — Mixed</option>
+                                  <option value="T">T — TDMA</option>
                                 </select>
                               </label>
                               <label className="checkbox-label"><input type="checkbox" checked={talkgroupDraft.record ?? true} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, record: e.target.checked })} /> Record (unchecked = never record)</label>
@@ -1308,7 +1331,7 @@ export function ApplianceDrawer({
                   ) : (
                     <>
                       <label>Frequency (MHz)<MhzField valueHz={systemDraft.frequencyHz} placeholder="154.445" onChange={(frequencyHz) => setSystemDraft({ ...systemDraft, frequencyHz })} /></label>
-                      <label>Bandwidth (MHz)<MhzField valueHz={systemDraft.bandwidthHz} placeholder="0.0125" onChange={(bandwidthHz) => setSystemDraft({ ...systemDraft, bandwidthHz })} /><small className="pane-desc">NFM 0.0125 Â· FM 0.025 Â· narrow 0.00625</small></label>
+                      <label>Bandwidth (MHz)<MhzField valueHz={systemDraft.bandwidthHz} placeholder="0.0125" onChange={(bandwidthHz) => setSystemDraft({ ...systemDraft, bandwidthHz })} /><small className="pane-desc">NFM 0.0125 · FM 0.025 · narrow 0.00625</small></label>
                       <label>Modulation
                         <select value={systemDraft.modulation ?? "NFM"} onChange={(e) => setSystemDraft({ ...systemDraft, modulation: e.target.value })}>
                           <option value="NFM">NFM (12.5 kHz)</option>
@@ -1381,7 +1404,7 @@ export function ApplianceDrawer({
                       const preset = AI_STACK_PRESETS[e.target.value];
                       if (preset) setSettings({ ...settings, ...preset });
                     }}>
-                      <option value="">Choose presetâ€¦</option>
+                      <option value="">Choose preset…</option>
                       <option value="local-gpu">Local GPU</option>
                       <option value="cloud-hybrid">Cloud hybrid</option>
                       <option value="privacy-max">Privacy max</option>
@@ -1498,14 +1521,14 @@ export function ApplianceDrawer({
             <div className="tab-pane">
               <h3>Runtime Diagnostics</h3>
               {runtime && <div className="config-box"><span>Receivers: {runtime.receiverCount}</span><span>Decoder: {runtime.decoderConnected ? "connected" : "offline"}</span><span>AI: {runtime.aiWorkerStatus ?? "unknown"}</span><span>Queue backlog: {runtime.queueBacklog ?? 0}</span><span>Storage: {runtime.storagePath ?? "unknown"}</span><span>Persistence: {runtime.persistenceConnected ? "connected" : "file fallback"}</span><span>Active scan list: {runtime.activeScanList ?? "none"}</span></div>}
-              {diagnostics && <div className="config-box"><span>Capture: {diagnostics.capture.state} â€” {diagnostics.capture.detail}</span><span>Decoder: {diagnostics.decoder.state} â€” {diagnostics.decoder.detail}</span><span>Recording: {diagnostics.recording.state}</span><span>Ingestion: {diagnostics.ingestion.state}</span><span>AI: {diagnostics.ai.state} â€” {diagnostics.ai.detail}</span><span>Image: {diagnostics.imageVersion ?? "unknown"}</span><span>Config hash: {diagnostics.configHash ?? "â€”"}</span><span>Process ID: {diagnostics.processId ?? "â€”"}</span><span>Decoder heartbeat age: {diagnostics.decoderHeartbeatAgeSeconds ?? "â€”"}s</span><span>Control lock age: {diagnostics.decoderControlLockAgeSeconds ?? "â€”"}s</span>{diagnostics.failureReason && <span>Failure: {diagnostics.failureReason}</span>}{diagnostics.aiFailureReason && <span>AI failure: {diagnostics.aiFailureReason}</span>}{diagnostics.simulated && <span className="live-tag">SIMULATED</span>}</div>}
+              {diagnostics && <div className="config-box"><span>Capture: {diagnostics.capture.state} — {diagnostics.capture.detail}</span><span>Decoder: {diagnostics.decoder.state} — {diagnostics.decoder.detail}</span><span>Recording: {diagnostics.recording.state}</span><span>Ingestion: {diagnostics.ingestion.state}</span><span>AI: {diagnostics.ai.state} — {diagnostics.ai.detail}</span><span>Image: {diagnostics.imageVersion ?? "unknown"}</span><span>Config hash: {diagnostics.configHash ?? "—"}</span><span>Process ID: {diagnostics.processId ?? "—"}</span><span>Decoder heartbeat age: {diagnostics.decoderHeartbeatAgeSeconds ?? "—"}s</span><span>Control lock age: {diagnostics.decoderControlLockAgeSeconds ?? "—"}s</span>{diagnostics.failureReason && <span>Failure: {diagnostics.failureReason}</span>}{diagnostics.aiFailureReason && <span>AI failure: {diagnostics.aiFailureReason}</span>}{diagnostics.simulated && <span className="live-tag">SIMULATED</span>}</div>}
               <div className="btn-row">
                 <button
                   type="button"
                   onClick={async () => {
                     try {
                       await applyDecoderConfig();
-                      setStatusMessage("Apply requested â€” capture reloading with saved settings");
+                      setStatusMessage("Apply requested — capture reloading with saved settings");
                     } catch (error) {
                       setStatusMessage(error instanceof Error ? error.message : "Apply failed");
                     }
@@ -1555,7 +1578,7 @@ export function ApplianceDrawer({
                     <div key={`${entry.resourceId}-${index}`} className="audit-row">
                       <span>{new Date(entry.occurredAt).toLocaleString()}</span>
                       <span>{entry.action}</span>
-                      <span>{entry.resourceType} Â· {entry.resourceId}</span>
+                      <span>{entry.resourceType} · {entry.resourceId}</span>
                     </div>
                   ))}
                   {auditLog.length === 0 && <span>No audit entries recorded.</span>}

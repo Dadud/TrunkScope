@@ -174,7 +174,7 @@ Hardware acceptance should use `scripts/verified-hardware-acceptance.py` and the
 2. Read this file plus the relevant `docs/` and deployment README before changing runtime behavior.
 3. **AI agents:** follow [`docs/ai-contributing.md`](docs/ai-contributing.md) for commit, push, and verification rules. OpenCode loads [`opencode.json`](opencode.json); Cursor loads [`.cursor/rules/`](.cursor/rules/).
 4. Keep source, Docker, Unraid, and UI changes synchronized; never validate only a local build when the user asked about the appliance.
-5. Prefer `rg` for discovery and `apply_patch` for source edits.
+5. Prefer `rg` for discovery and `apply_patch` for source edits. **Never edit file contents through PowerShell pipes** (`Get-Content`/`Set-Content`): PS 5.1 silently corrupts UTF-8 (reads BOM-less files as ANSI) and once shipped mojibake to the production UI. Content edits use the edit tool; a mojibake grep gate (`apps/web/src/encoding.test.ts`) fails tests if this regresses.
 6. Run proportionate tests after changes. For deployment changes, validate Compose config and rebuild the affected services.
 7. When testing live Unraid, report the exact observed state and distinguish hardware, simulated, unavailable, and stale-recording evidence.
 8. Update `docs/completion-status.md` only with evidence-backed status. Do not mark physical acceptance gates complete based on old recordings or software-only checks.

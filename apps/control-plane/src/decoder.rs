@@ -242,7 +242,7 @@ fn apply_status(state: &AppState, event: StatusEvent) {
 
 /// Trunk Recorder only sends call_end over the status socket; if the socket
 /// drops mid-call the row would stay Active forever. Finalize calls whose
-/// last event is older than five minutes (metadata only â€” a late sidecar can
+/// last event is older than five minutes (metadata only — a late sidecar can
 /// still attach audio through the normal upsert path).
 pub fn spawn_stale_sweep(state: Arc<AppState>) {
     tokio::spawn(async move {

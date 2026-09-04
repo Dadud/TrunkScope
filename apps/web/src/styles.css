@@ -1512,6 +1512,49 @@ button, input, select, textarea {
   margin-bottom: 16px;
 }
 
+.appliance-status-bar.error {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: var(--accent-red);
+}
+
+/* Stat boxes: each value on its own line instead of running together. */
+.config-box > span,
+.config-section > .config-box span {
+  display: block;
+  margin: 3px 0;
+}
+
+.box-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+}
+
+.box-header strong {
+  color: var(--text-main);
+}
+
+.fallback-details {
+  margin: 10px 0;
+}
+
+.fallback-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--accent-cyan);
+  padding: 4px 0;
+}
+
+.fallback-details[open] summary {
+  margin-bottom: 8px;
+}
+
+.fallback-details .form-grid {
+  margin-bottom: 8px;
+}
+
 .appliance-body {
   flex: 1;
   overflow-y: auto;
