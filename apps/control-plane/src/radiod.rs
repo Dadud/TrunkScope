@@ -8,7 +8,7 @@ use tokio::{
     process::Command,
     time::sleep,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use trunkscope_domain::{
     AudioAsset, Call, CallEvent, CallState, EncryptionState, Receiver, ReceiverDriver,
     ReceiverHealth, ReceiverRole, ReceiverState,
@@ -70,7 +70,7 @@ impl RadioConfig {
                 .iter()
                 .find(|profile| profile.protocol == "analog-fm")
                 .and_then(|profile| profile.squelch_db)
-                .unwrap_or(-45.0),
+                .unwrap_or(-60.0),
         })
     }
 }
@@ -401,6 +401,28 @@ fn apply_event(state: &AppState, receiver_id: Uuid, event: RadioEvent) {
             let tuned_frequency_hz = receiver
                 .center_frequency_hz
                 .unwrap_or(settings.radio_frequency_hz);
+            // The channel plan is the source of truth: audio captured on a
+            // frequency no analog profile claims is noise or a mis-tuned
+            // receiver, and archiving it just spams the feed with static.
+            let matches_plan = state
+                .systems
+                .read()
+                .expect("system lock poisoned")
+                .iter()
+                .filter(|profile| profile.protocol == "analog-fm")
+                .any(|profile| {
+                    profile
+                        .frequency_hz
+                        .map(|frequency| frequency.abs_diff(tuned_frequency_hz) <= 25_000)
+                        .unwrap_or(false)
+                });
+            if !matches_plan {
+                debug!(
+                    frequency_hz = tuned_frequency_hz,
+                    "audio dropped: tuned frequency matches no analog profile"
+                );
+                return;
+            }
             let tone_allowed = state
                 .systems
                 .read()
@@ -522,6 +544,62 @@ mod tests {
             initial_receiver(Uuid::new_v4(), &config).driver,
             ReceiverDriver::Sdrplay
         );
+    }
+
+    #[test]
+    fn audio_outside_the_channel_plan_is_dropped() {
+        let state = AppState::new();
+        let receiver_id = Uuid::new_v4();
+        state.receivers.write().unwrap().push(initial_receiver(
+            receiver_id,
+            &RadioConfig {
+                executable: "radiod".into(),
+                device: "driver=sdrplay".into(),
+                frequency_hz: 154_000_000,
+                sample_rate_hz: 2_400_000,
+                bandwidth_hz: None,
+                gain_db: Some(40.0),
+                agc: false,
+                ppm: 0.0,
+                audio_output: "/var/lib/trunkscope/calls".into(),
+                squelch_dbfs: -60.0,
+            },
+        ));
+        // Plan only knows about 154.445; capture tuned to 154.000 must drop.
+        state
+            .systems
+            .write()
+            .unwrap()
+            .push(crate::state::SystemProfile {
+                id: Uuid::new_v4(),
+                name: "Jackson FM".into(),
+                protocol: "analog-fm".into(),
+                control_channel_hz: None,
+                control_channels_hz: Vec::new(),
+                nac: None,
+                frequency_hz: Some(154_445_000),
+                bandwidth_hz: Some(12_500),
+                modulation: Some("NFM".into()),
+                squelch_db: Some(-60.0),
+                tone: Some("123.0".into()),
+                deviation_hz: None,
+                step_hz: None,
+                dwell_ms: None,
+                sites: Vec::new(),
+                receiver_id: None,
+                decode_mdc: None,
+            });
+        apply_event(
+            &state,
+            receiver_id,
+            RadioEvent::AudioSegment {
+                path: "/var/lib/trunkscope/calls/fm-1.wav".into(),
+                duration_ms: 1200,
+                tone_hz: None,
+                tone_code: None,
+            },
+        );
+        assert!(state.calls.read().unwrap().is_empty());
     }
 
     #[test]
