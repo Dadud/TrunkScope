@@ -499,6 +499,12 @@ fn systems_for_receiver<'a>(
         .collect()
 }
 
+/// Trunked protocols tune from control channels; everything else is a
+/// conventional channel plan.
+fn is_trunked(system: &SystemProfile) -> bool {
+    system.protocol == "p25" || system.protocol == "dmr"
+}
+
 fn build_decoder_source(
     receiver: &Receiver,
     settings: &AppSettings,
@@ -508,7 +514,7 @@ fn build_decoder_source(
 ) -> serde_json::Value {
     let p25_controls: Vec<u64> = assigned
         .iter()
-        .filter(|system| system.protocol == "p25")
+        .filter(|system| is_trunked(system))
         .flat_map(|system| p25_control_channels(system, site_filter))
         .collect();
     let analog_frequencies: Vec<u64> = assigned
@@ -523,16 +529,19 @@ fn build_decoder_source(
         .collect();
     let (requested_center, requested_span) = tuning_span(&all_tuning);
     let has_p25 = assigned.iter().any(|system| system.protocol == "p25");
+    let has_dmr = assigned.iter().any(|system| system.protocol == "dmr");
+    let has_trunked = has_p25 || has_dmr;
     let has_analog = assigned.iter().any(|system| system.protocol == "analog-fm");
     let gain = receiver.gain_db.or(settings.radio_gain_db).unwrap_or(40.0);
     let mut source = serde_json::json!({
         "center": requested_center.unwrap_or(receiver.center_frequency_hz.unwrap_or(settings.radio_frequency_hz)),
-        "rate": requested_span.unwrap_or(0).max(if has_p25 { 6_000_000 } else { 0 }).max(receiver.sample_rate_hz.unwrap_or(settings.radio_sample_rate_hz) as u64),
+        "rate": requested_span.unwrap_or(0).max(if has_trunked { 6_000_000 } else { 0 }).max(receiver.sample_rate_hz.unwrap_or(settings.radio_sample_rate_hz) as u64),
         "error": receiver.ppm,
         "gain": gain,
         "gainSettings": receiver_presets::default_gain_settings(receiver.driver, gain),
         "digitalRecorders": if has_p25 { receiver.digital_recorders.unwrap_or(6) } else { 0 },
         "analogRecorders": if has_analog { receiver.analog_recorders.unwrap_or(4) } else { 0 },
+        "dmrRecorders": if has_dmr { receiver.dmr_recorders.unwrap_or(4) } else { 0 },
         "driver": "osmosdr",
         "device": receiver_presets::device_string(receiver, &settings.radio_device, index),
     });
@@ -593,6 +602,7 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
             "gainSettings": receiver_presets::default_gain_settings(ReceiverDriver::Sdrplay, gain),
             "digitalRecorders": 6,
             "analogRecorders": 4,
+            "dmrRecorders": 4,
             "driver": "osmosdr",
             "device": source_device,
         }));
@@ -648,8 +658,9 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         .unwrap_or_else(|_| std::path::PathBuf::from("/var/lib/trunkscope/calls"));
     let mut configured_systems: Vec<_> = systems
         .iter()
-        .filter(|system| system.protocol == "p25")
+        .filter(|system| is_trunked(system))
         .map(|system| {
+            let is_dmr = system.protocol == "dmr";
             let selected_sites: Vec<_> = system
                 .sites
                 .iter()
@@ -667,14 +678,22 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
                 default_talkgroups_file,
             );
             let mut configured = serde_json::json!({
-                "type": "p25", "shortName": short_name_for_system(system),
+                "type": if is_dmr { "dmr" } else { "p25" },
+                "shortName": short_name_for_system(system),
                 "control_channels": control_channels,
                 "sites": selected_sites,
-                "modulation": "qpsk", "squelch": -60, "recordUnknown": true, "hideEncrypted": false,
+                "modulation": if is_dmr { "fsk4" } else { "qpsk" },
+                "squelch": -60, "recordUnknown": true, "hideEncrypted": false,
                 "talkgroupsFile": talkgroups_file,
             });
-            if let Some(nac) = system.nac.filter(|value| *value > 0 && *value <= 0xFFF) {
-                configured["nac"] = serde_json::json!(nac);
+            if !is_dmr {
+                // NAC is a P25 concept; monitorEncrypted is documented P25-only.
+                if let Some(nac) = system.nac.filter(|value| *value > 0 && *value <= 0xFFF) {
+                    configured["nac"] = serde_json::json!(nac);
+                }
+                if system.monitor_encrypted == Some(true) {
+                    configured["monitorEncrypted"] = serde_json::json!(true);
+                }
             }
             attach_upload_script(&mut configured);
             configured
@@ -713,7 +732,7 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
     // control channel before giving up; it should cover the largest plan.
     let control_retune_limit = systems
         .iter()
-        .filter(|system| system.protocol == "p25")
+        .filter(|system| is_trunked(system))
         .map(|system| p25_control_channels(system, site_filter.as_deref()).len())
         .max()
         .unwrap_or(0);
@@ -784,7 +803,7 @@ fn talkgroups_file_for_system(
 /// Trunk Recorder recommends 4-6 letters, no spaces, and feeds shortName
 /// directly into recording filenames. Strip everything that hurts there while
 /// keeping the name recognizable.
-fn sanitize_short_name(name: &str) -> String {
+pub(crate) fn sanitize_short_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -1173,6 +1192,8 @@ struct ReceiverInput {
     digital_recorders: Option<u32>,
     #[serde(default)]
     analog_recorders: Option<u32>,
+    #[serde(default)]
+    dmr_recorders: Option<u32>,
 }
 
 fn default_receiver_enabled() -> bool {
@@ -1196,6 +1217,7 @@ fn receiver_from_input(input: ReceiverInput, id: uuid::Uuid) -> Receiver {
         auto_tune: input.auto_tune,
         digital_recorders: input.digital_recorders,
         analog_recorders: input.analog_recorders,
+        dmr_recorders: input.dmr_recorders,
         capabilities: receiver_presets::default_capabilities(input.driver),
         health: ReceiverHealth {
             signal_dbfs: -120.0,
@@ -3258,14 +3280,16 @@ async fn save_system(
         profile.tone = None;
     }
     let is_p25 = profile.protocol.starts_with("p25");
+    let is_dmr = profile.protocol == "dmr";
+    let is_trunked_profile = is_p25 || is_dmr;
     if profile.name.trim().is_empty()
-        || (is_p25 && profile.control_channel_hz.unwrap_or_default() == 0)
+        || (is_trunked_profile && profile.control_channel_hz.unwrap_or_default() == 0)
         || (is_p25 && profile.nac.is_some_and(|nac| nac > 0xFFF))
-        || (!is_p25 && profile.frequency_hz.unwrap_or_default() == 0)
+        || (!is_trunked_profile && profile.frequency_hz.unwrap_or_default() == 0)
     {
         return (StatusCode::BAD_REQUEST, Json(profile));
     }
-    if !is_p25 {
+    if !is_trunked_profile {
         let bandwidth_ok = matches!(profile.bandwidth_hz, Some(6250 | 12500 | 25000));
         let tone_ok = profile
             .tone
@@ -3280,6 +3304,10 @@ async fn save_system(
     } else {
         profile.frequency_hz = None;
         profile.tone = None;
+        if !is_p25 {
+            // DMR has no NAC; clear any stray value from the form.
+            profile.nac = None;
+        }
     }
     if profile.id.is_nil() {
         profile.id = uuid::Uuid::new_v4();
@@ -3566,6 +3594,7 @@ mod tests {
             sites: Vec::new(),
             receiver_id: None,
             decode_mdc: None,
+            monitor_encrypted: None,
         });
         let config = decoder_config_value(&state);
         assert_eq!(config["minDuration"], 1.0);
@@ -3604,6 +3633,7 @@ mod tests {
             sites: Vec::new(),
             receiver_id: None,
             decode_mdc: None,
+            monitor_encrypted: None,
         });
         state.receivers.write().unwrap().push(Receiver {
             id: uuid::Uuid::new_v4(),
@@ -3621,6 +3651,7 @@ mod tests {
             auto_tune: None,
             digital_recorders: Some(12),
             analog_recorders: None,
+            dmr_recorders: None,
             capabilities: receiver_presets::default_capabilities(ReceiverDriver::Sdrplay),
             health: ReceiverHealth {
                 signal_dbfs: -120.0,
@@ -3698,6 +3729,60 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CREATED);
     }
 
+    #[tokio::test]
+    async fn dmr_profile_saves_and_emits_trunk_recorder_dmr_system() {
+        let state = test_state();
+        let response = router(Arc::clone(&state))
+            .oneshot(
+                Request::post("/api/v1/systems")
+                    .header("content-type", "application/json")
+                    .header("cookie", "trunkscope_session=test-session")
+                    .body(Body::from(
+                        r#"{"id":"00000000-0000-0000-0000-000000000000","name":"County DMR","protocol":"dmr","controlChannelHz":452000000}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let config = decoder_config_value(&state);
+        let systems = config["systems"].as_array().unwrap();
+        assert_eq!(systems[0]["type"], "dmr");
+        assert_eq!(systems[0]["shortName"], "COUNTYDMR");
+        assert_eq!(systems[0]["modulation"], "fsk4");
+        assert!(systems[0].get("nac").is_none());
+        let sources = config["sources"].as_array().unwrap();
+        assert_eq!(sources[0]["dmrRecorders"], 4);
+    }
+
+    #[tokio::test]
+    async fn p25_monitor_encrypted_flag_reaches_trunk_recorder() {
+        let state = test_state();
+        state.systems.write().unwrap().push(SystemProfile {
+            id: uuid::Uuid::new_v4(),
+            name: "Metro P25".into(),
+            protocol: "p25".into(),
+            control_channel_hz: Some(851_012_500),
+            control_channels_hz: vec![],
+            nac: Some(0x293),
+            frequency_hz: None,
+            bandwidth_hz: None,
+            modulation: None,
+            squelch_db: None,
+            tone: None,
+            deviation_hz: None,
+            step_hz: None,
+            dwell_ms: None,
+            sites: Vec::new(),
+            receiver_id: None,
+            decode_mdc: None,
+            monitor_encrypted: Some(true),
+        });
+        let config = decoder_config_value(&state);
+        let systems = config["systems"].as_array().unwrap();
+        assert_eq!(systems[0]["monitorEncrypted"], true);
+    }
+
     #[test]
     fn analog_tone_validation_accepts_ctcss_and_dcs() {
         assert!(valid_analog_tone("100.0"));
@@ -3729,6 +3814,7 @@ mod tests {
                 auto_tune: None,
                 digital_recorders: None,
                 analog_recorders: None,
+                dmr_recorders: None,
                 capabilities: receiver_presets::default_capabilities(ReceiverDriver::RtlSdr),
                 health: ReceiverHealth {
                     signal_dbfs: -120.0,
@@ -3754,6 +3840,7 @@ mod tests {
                 auto_tune: None,
                 digital_recorders: None,
                 analog_recorders: None,
+                dmr_recorders: None,
                 capabilities: receiver_presets::default_capabilities(ReceiverDriver::Airspy),
                 health: ReceiverHealth {
                     signal_dbfs: -120.0,
@@ -3783,6 +3870,7 @@ mod tests {
                 sites: Vec::new(),
                 receiver_id: Some(receiver_a),
                 decode_mdc: None,
+                monitor_encrypted: None,
             },
             SystemProfile {
                 id: uuid::Uuid::new_v4(),
@@ -3802,6 +3890,7 @@ mod tests {
                 sites: Vec::new(),
                 receiver_id: Some(receiver_b),
                 decode_mdc: None,
+                monitor_encrypted: None,
             },
         ]);
         let config = decoder_config_value(&state);
@@ -3833,6 +3922,7 @@ mod tests {
             sites: Vec::new(),
             receiver_id: None,
             decode_mdc: None,
+            monitor_encrypted: None,
         });
         let config = decoder_config_value(&state);
         let systems = config["systems"].as_array().unwrap();

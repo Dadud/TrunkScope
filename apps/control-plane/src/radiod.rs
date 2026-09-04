@@ -271,6 +271,7 @@ fn initial_receiver(id: Uuid, config: &RadioConfig) -> Receiver {
         auto_tune: None,
         digital_recorders: None,
         analog_recorders: None,
+        dmr_recorders: None,
         capabilities: receiver_presets::default_capabilities(driver),
         health: ReceiverHealth {
             signal_dbfs: -200.0,
@@ -590,6 +591,7 @@ mod tests {
                 sites: Vec::new(),
                 receiver_id: None,
                 decode_mdc: None,
+                monitor_encrypted: None,
             });
         apply_event(
             &state,

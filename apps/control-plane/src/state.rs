@@ -73,6 +73,11 @@ pub struct SystemProfile {
     /// (fire station alerting tones).
     #[serde(default)]
     pub decode_mdc: Option<bool>,
+    /// P25 only: Trunk Recorder's `monitorEncrypted` — track encrypted calls
+    /// for metadata without recording audio. Matches the TrunkScope product
+    /// rule that encrypted calls retain metadata only.
+    #[serde(default)]
+    pub monitor_encrypted: Option<bool>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -424,6 +429,10 @@ pub struct AppState {
     /// Calls already handed to the AI pipeline. The same call_end can arrive
     /// through three ingestion paths; transcription must run once.
     pub enqueued_calls: Mutex<HashSet<uuid::Uuid>>,
+    /// Live decoder calls with their last event time. A sweep finalizes calls
+    /// whose call_end never arrived (dropped socket) instead of leaving
+    /// zombie Active rows in the feed.
+    pub decoder_active_calls: Mutex<HashMap<uuid::Uuid, chrono::DateTime<chrono::Utc>>>,
 }
 
 impl AppState {
@@ -733,6 +742,7 @@ impl AppState {
             force_apply: AtomicBool::new(false),
             audio_alias: Mutex::new(HashMap::new()),
             enqueued_calls: Mutex::new(HashSet::new()),
+            decoder_active_calls: Mutex::new(HashMap::new()),
             processing_receiver: Mutex::new(Some(processing_receiver)),
             ai_worker_status: RwLock::new("disabled".into()),
             ai_last_error: RwLock::new(None),

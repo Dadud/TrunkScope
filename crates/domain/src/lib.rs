@@ -38,6 +38,10 @@ pub struct Receiver {
     /// dedicated recorders and do not consume this pool.
     #[serde(default)]
     pub analog_recorders: Option<u32>,
+    /// Trunked-DMR voice recorders for this source (Trunk Recorder
+    /// `dmrRecorders`). One recorder is consumed per active TDMA slot.
+    #[serde(default)]
+    pub dmr_recorders: Option<u32>,
     pub capabilities: ReceiverCapabilities,
     pub health: ReceiverHealth,
 }

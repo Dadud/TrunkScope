@@ -122,6 +122,14 @@ Configure in **Appliance → Systems**:
 
 `siteFilter` limits which sites appear in generated decoder config (useful for statewide systems).
 
+## DMR system profiles
+
+**Protocol** `dmr`: trunked DMR (Tier III / MotoTRBO). Control channel(s) + talkgroups work exactly like P25; NAC does not apply. Each source exposes a `dmrRecorders` pool (default 4, one consumed per active TDMA slot). Calls ingest with category **DMR**; encryption withholding applies identically.
+
+## P25 encrypted-call metadata
+
+P25 systems can enable **Monitor encrypted** (Trunk Recorder's `monitorEncrypted`): encrypted calls are tracked for talkgroup activity metadata without recording audio — matching the TrunkScope rule that encrypted calls retain metadata only.
+
 ## Conventional FM
 
 - **Protocol** `analog-fm`: frequency, bandwidth, squelch, CTCSS/DCS tone

@@ -16,6 +16,7 @@ export interface Receiver {
   autoTune?: boolean;
   digitalRecorders?: number;
   analogRecorders?: number;
+  dmrRecorders?: number;
   capabilities?: {
     minimumFrequencyHz: number;
     maximumFrequencyHz: number;

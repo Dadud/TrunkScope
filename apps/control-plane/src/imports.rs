@@ -233,6 +233,7 @@ pub fn parse_systems_csv(csv: &str) -> Vec<SystemProfile> {
             sites: Vec::new(),
             receiver_id: None,
             decode_mdc: None,
+            monitor_encrypted: None,
         });
     }
     systems

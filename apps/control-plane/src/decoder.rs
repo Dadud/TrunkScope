@@ -213,6 +213,11 @@ fn apply_status(state: &AppState, event: StatusEvent) {
     match convert_call(state, &decoder_call, ended) {
         Some(call) if ended => {
             update_receiver_health(state, &call, &decoder_call);
+            state
+                .decoder_active_calls
+                .lock()
+                .expect("decoder active lock poisoned")
+                .remove(&call.id);
             state.upsert_call(call.clone(), CallEvent::Ended(call.clone()));
             // The same call_end reaches us via the status socket, the upload
             // script, and the sidecar poller; the AI pipeline must run once.
@@ -222,11 +227,68 @@ fn apply_status(state: &AppState, event: StatusEvent) {
         }
         Some(call) => {
             update_receiver_health(state, &call, &decoder_call);
+            state
+                .decoder_active_calls
+                .lock()
+                .expect("decoder active lock poisoned")
+                .insert(call.id, Utc::now());
             state.upsert_call(call.clone(), CallEvent::Started(call));
         }
         None => {
             warn!(decoder_call_id = %decoder_call.id.value(), "decoder call was missing required identifiers")
         }
+    }
+}
+
+/// Trunk Recorder only sends call_end over the status socket; if the socket
+/// drops mid-call the row would stay Active forever. Finalize calls whose
+/// last event is older than five minutes (metadata only â€” a late sidecar can
+/// still attach audio through the normal upsert path).
+pub fn spawn_stale_sweep(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            sweep_stale_calls(&state);
+        }
+    });
+}
+
+fn sweep_stale_calls(state: &AppState) {
+    let stale: Vec<Uuid> = {
+        let active = state
+            .decoder_active_calls
+            .lock()
+            .expect("decoder active lock poisoned");
+        active
+            .iter()
+            .filter(|(_, seen)| Utc::now() - *seen > chrono::Duration::seconds(300))
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    for id in stale {
+        let finalized = {
+            let mut calls = state.calls.write().expect("calls lock poisoned");
+            match calls
+                .iter_mut()
+                .find(|call| call.id == id && call.state == CallState::Active)
+            {
+                Some(call) => {
+                    call.state = CallState::Complete;
+                    call.ended_at = Some(Utc::now());
+                    Some(call.clone())
+                }
+                None => None,
+            }
+        };
+        if let Some(call) = finalized {
+            info!(call_id = %id, "finalized stale decoder call; call_end never arrived");
+            state.upsert_call(call.clone(), CallEvent::Ended(call));
+        }
+        state
+            .decoder_active_calls
+            .lock()
+            .expect("decoder active lock poisoned")
+            .remove(&id);
     }
 }
 
@@ -282,6 +344,18 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
         return None;
     }
     let short_name = source.short_name.value();
+    // TR status events carry no DMR discriminator, so match the sanitized
+    // shortName back to a configured DMR system for honest categorization.
+    let is_dmr_system = state
+        .systems
+        .read()
+        .map(|systems| {
+            systems.iter().any(|profile| {
+                profile.protocol == "dmr"
+                    && crate::api::sanitize_short_name(&profile.name) == short_name
+            })
+        })
+        .unwrap_or(false);
     let system_name = if short_name.is_empty() {
         "P25 system".to_string()
     } else {
@@ -347,6 +421,8 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
         talkgroup_label,
         category: if source.analog.value() {
             "Analog NFM".into()
+        } else if is_dmr_system {
+            "DMR".into()
         } else if source.phase2.value() {
             "P25 Phase 2".into()
         } else {
@@ -475,6 +551,67 @@ mod tests {
     }
 
     #[test]
+    fn stale_active_decoder_calls_are_finalized() {
+        let state = AppState::new();
+        let start: StatusEvent = serde_json::from_str(
+            r#"{"type":"call_start","call":{"id":"0_1001_9999","freq":"851012500","shortName":"Metro","talkgroup":"1001","startTime":"1515575009"}}"#,
+        )
+        .unwrap();
+        apply_status(&state, start);
+        let call_id = {
+            let active = state.decoder_active_calls.lock().unwrap();
+            *active.keys().next().expect("active call tracked")
+        };
+        // Age the event past the stale threshold.
+        state
+            .decoder_active_calls
+            .lock()
+            .unwrap()
+            .insert(call_id, Utc::now() - chrono::Duration::seconds(600));
+        sweep_stale_calls(&state);
+        let calls = state.calls.read().unwrap();
+        assert_eq!(calls[0].state, CallState::Complete);
+        assert!(calls[0].ended_at.is_some());
+        assert!(state.decoder_active_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dmr_system_calls_categorize_as_dmr() {
+        let state = AppState::new();
+        state
+            .systems
+            .write()
+            .unwrap()
+            .push(crate::state::SystemProfile {
+                id: Uuid::new_v4(),
+                name: "County DMR".into(),
+                protocol: "dmr".into(),
+                control_channel_hz: Some(452_000_000),
+                control_channels_hz: vec![],
+                nac: None,
+                frequency_hz: None,
+                bandwidth_hz: None,
+                modulation: None,
+                squelch_db: None,
+                tone: None,
+                deviation_hz: None,
+                step_hz: None,
+                dwell_ms: None,
+                sites: Vec::new(),
+                receiver_id: None,
+                decode_mdc: None,
+                monitor_encrypted: None,
+            });
+        let event: StatusEvent = serde_json::from_str(
+            r#"{"type":"call_start","call":{"id":"3_77_1732","freq":"452010000","shortName":"COUNTYDMR","talkgroup":"77","startTime":"1515575009"}}"#,
+        )
+        .unwrap();
+        apply_status(&state, event);
+        let calls = state.calls.read().unwrap();
+        assert_eq!(calls[0].category, "DMR");
+    }
+
+    #[test]
     fn accepts_numeric_trunk_recorder_fields() {
         let state = AppState::new();
         let event: StatusEvent = serde_json::from_str(
@@ -527,6 +664,7 @@ mod tests {
                 sites: Vec::new(),
                 receiver_id: None,
                 decode_mdc: None,
+                monitor_encrypted: None,
             });
         let event: StatusEvent = serde_json::from_str(r#"{"type":"call_start","call":{"id":"tone-1","freq":"166550000","talkgroup":"1","analog":true,"tone":"123.0"}}"#).unwrap();
         apply_status(&state, event);
@@ -558,6 +696,7 @@ mod tests {
                 sites: Vec::new(),
                 receiver_id: None,
                 decode_mdc: None,
+                monitor_encrypted: None,
             });
         let event: StatusEvent = serde_json::from_str(
             r#"{"type":"call_start","call":{"id":"dcs-1","freq":"166550000","talkgroup":"1","analog":true,"tone":"D023N"}}"#,

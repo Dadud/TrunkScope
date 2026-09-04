@@ -96,6 +96,7 @@ async fn main() -> Result<()> {
                 auto_tune: None,
                 digital_recorders: None,
                 analog_recorders: None,
+                dmr_recorders: None,
                 capabilities: ReceiverCapabilities {
                     minimum_frequency_hz: 1_000_000,
                     maximum_frequency_hz: 2_000_000_000,
@@ -114,6 +115,8 @@ async fn main() -> Result<()> {
             });
     }
     api::write_decoder_config(&state);
+    // Finalizes decoder calls whose call_end never arrived (socket drops).
+    decoder::spawn_stale_sweep(Arc::clone(&state));
     // The boot-time write is, by definition, what the supervised capture
     // starts with; without this the apply task would bounce the decoder
     // seconds after every container start.

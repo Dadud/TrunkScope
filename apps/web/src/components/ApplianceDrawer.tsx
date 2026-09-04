@@ -1,4 +1,4 @@
-import { useState, useEffect, type ChangeEvent } from "react";
+﻿import { useState, useEffect, type ChangeEvent } from "react";
 import type { Receiver, Snapshot } from "../types";
 import {
   applyDecoderConfig,
@@ -140,6 +140,7 @@ export function ApplianceDrawer({
     soapyIndex: 0,
     autoTune: false,
     digitalRecorders: 6,
+    dmrRecorders: 4,
     analogRecorders: 4,
   });
   const [discoveredDevices, setDiscoveredDevices] = useState<Awaited<ReturnType<typeof discoverReceivers>>>([]);
@@ -301,7 +302,7 @@ export function ApplianceDrawer({
   if (!isOpen) return null;
 
   const handleDiscoverReceivers = async () => {
-    setStatusMessage("Scanning for USB and network SDR devices…");
+    setStatusMessage("Scanning for USB and network SDR devicesâ€¦");
     try {
       const devices = await discoverReceivers();
       setDiscoveredDevices(devices);
@@ -356,7 +357,7 @@ export function ApplianceDrawer({
 
   // Receiver actions
   const handleReceiverAction = async (id: string, action: "probe" | "start" | "stop" | "restart") => {
-    setStatusMessage(`Requesting ${action.toUpperCase()}…`);
+    setStatusMessage(`Requesting ${action.toUpperCase()}â€¦`);
     try {
       const updated = await receiverAction(id, action);
       onUpdateReceiver(updated);
@@ -371,7 +372,7 @@ export function ApplianceDrawer({
       const updated = await updateReceiver(id, receiverDraft);
       onUpdateReceiver(updated);
       setEditingReceiverId(null);
-      setStatusMessage("Receiver settings saved — the capture reloads automatically.");
+      setStatusMessage("Receiver settings saved â€” the capture reloads automatically.");
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : "Save failed");
     }
@@ -484,32 +485,32 @@ export function ApplianceDrawer({
             className={activeTab === "sources" ? "active" : ""}
             onClick={() => setActiveTab("sources")}
           >
-            📡 SOURCES ({snapshot.receivers.length})
+            ðŸ“¡ SOURCES ({snapshot.receivers.length})
           </button>
           <button
             type="button"
             className={activeTab === "systems" ? "active" : ""}
             onClick={() => setActiveTab("systems")}
           >
-            ⚡ SYSTEMS
+            âš¡ SYSTEMS
           </button>
           <button
             type="button"
             className={activeTab === "monitoring" ? "active" : ""}
             onClick={() => setActiveTab("monitoring")}
           >
-            🎧 MONITORING
+            ðŸŽ§ MONITORING
           </button>
-          <button type="button" className={activeTab === "integrations" ? "active" : ""} onClick={() => setActiveTab("integrations")}>🤖 AI & INTEGRATIONS</button>
-          <button type="button" className={activeTab === "policy" ? "active" : ""} onClick={() => setActiveTab("policy")}>🌐 POLICY</button>
+          <button type="button" className={activeTab === "integrations" ? "active" : ""} onClick={() => setActiveTab("integrations")}>ðŸ¤– AI & INTEGRATIONS</button>
+          <button type="button" className={activeTab === "policy" ? "active" : ""} onClick={() => setActiveTab("policy")}>ðŸŒ POLICY</button>
           <button
             type="button"
             className={activeTab === "security" ? "active" : ""}
             onClick={() => setActiveTab("security")}
           >
-            🔒 SECURITY
+            ðŸ”’ SECURITY
           </button>
-          <button type="button" className={activeTab === "diagnostics" ? "active" : ""} onClick={() => setActiveTab("diagnostics")}>🩺 DIAGNOSTICS</button>
+          <button type="button" className={activeTab === "diagnostics" ? "active" : ""} onClick={() => setActiveTab("diagnostics")}>ðŸ©º DIAGNOSTICS</button>
         </div>
 
         {statusMessage && <div className="appliance-status-bar">{statusMessage}</div>}
@@ -519,7 +520,7 @@ export function ApplianceDrawer({
           {activeTab === "sources" && (
             <div className="tab-pane">
               <h3>Capture Sources</h3>
-              <p className="pane-desc">Persisted settings and receivers drive decoder generation. Saves apply automatically — the capture reloads within a few seconds.</p>
+              <p className="pane-desc">Persisted settings and receivers drive decoder generation. Saves apply automatically â€” the capture reloads within a few seconds.</p>
 
               {settings && (
                 <div className="config-section">
@@ -565,6 +566,7 @@ export function ApplianceDrawer({
                           soapyIndex: 0,
                           autoTune: false,
                           digitalRecorders: 6,
+                          dmrRecorders: 4,
                           analogRecorders: 4,
                         });
                         setSubmodelId(submodel?.id ?? "");
@@ -730,6 +732,17 @@ export function ApplianceDrawer({
                         }
                       />
                     </label>
+                    <label title="Trunked-DMR voice recorders; one per active TDMA slot">
+                      DMR recorders
+                      <input
+                        type="number"
+                        min={0}
+                        value={receiverDraft.dmrRecorders ?? 4}
+                        onChange={(e) =>
+                          setReceiverDraft({ ...receiverDraft, dmrRecorders: Number(e.target.value) })
+                        }
+                      />
+                    </label>
                     <label>
                       Gain (dB)
                       <input
@@ -824,6 +837,7 @@ export function ApplianceDrawer({
                             autoTune: r.autoTune ?? false,
                             digitalRecorders: r.digitalRecorders ?? 6,
                             analogRecorders: r.analogRecorders ?? 4,
+                            dmrRecorders: r.dmrRecorders ?? 4,
                           });
                         }}
                       >
@@ -907,11 +921,11 @@ export function ApplianceDrawer({
             <div className="tab-pane">
               <h3>Channel Monitoring</h3>
               <p className="pane-desc">
-                Trunk Recorder does not scan — every planned channel inside a source's coverage is recorded simultaneously, limited by that source's recorder pool.
+                Trunk Recorder does not scan â€” every planned channel inside a source's coverage is recorded simultaneously, limited by that source's recorder pool.
               </p>
               {diagnostics && (
                 <div className="config-box">
-                  <span>Decoder: {diagnostics.decoder.state} — {diagnostics.decoder.detail}</span>
+                  <span>Decoder: {diagnostics.decoder.state} â€” {diagnostics.decoder.detail}</span>
                   <span>Heartbeat: {diagnostics.decoderHeartbeatAgeSeconds != null ? `${diagnostics.decoderHeartbeatAgeSeconds}s ago` : "none"}</span>
                   <span>Recording: {diagnostics.recording.state}</span>
                 </div>
@@ -923,12 +937,12 @@ export function ApplianceDrawer({
                 const highHz = center + rate / 2;
                 const inCoverage = systems.flatMap((sys) => {
                   const channels: Array<{ label: string; hz: number; tone?: string }> = [];
-                  if (sys.protocol === "p25") {
+                  if (sys.protocol === "p25" || sys.protocol === "dmr") {
                     (sys.controlChannelsHz?.length ? sys.controlChannelsHz : sys.controlChannelHz ? [sys.controlChannelHz] : [])
                       .forEach((hz) => channels.push({ label: `${sys.name} control`, hz }));
                     (sys.sites ?? []).forEach((site) =>
                       site.controlChannelsHz.forEach((hz) =>
-                        channels.push({ label: `${sys.name} · ${site.name}`, hz }),
+                        channels.push({ label: `${sys.name} Â· ${site.name}`, hz }),
                       ),
                     );
                   } else if (sys.frequencyHz) {
@@ -942,7 +956,7 @@ export function ApplianceDrawer({
                       <strong>{receiver.label}</strong>
                       <span>Center: {formatFrequency(center)}</span>
                       <span>Rate: {(rate / 1e6).toFixed(2)} MHz</span>
-                      <span>Coverage: {formatFrequency(lowHz)} – {formatFrequency(highHz)}</span>
+                      <span>Coverage: {formatFrequency(lowHz)} â€“ {formatFrequency(highHz)}</span>
                       <span>Recorders: {receiver.digitalRecorders ?? 6} digital / {receiver.analogRecorders ?? 4} analog</span>
                     </div>
                     {inCoverage.length === 0 ? (
@@ -951,7 +965,7 @@ export function ApplianceDrawer({
                       <div className="btn-row">
                         {inCoverage.map((channel) => (
                           <span key={`${channel.label}-${channel.hz}`}>
-                            {formatFrequency(channel.hz)} · {channel.label}{channel.tone ? ` · PL ${channel.tone}` : ""}
+                            {formatFrequency(channel.hz)} Â· {channel.label}{channel.tone ? ` Â· PL ${channel.tone}` : ""}
                           </span>
                         ))}
                       </div>
@@ -960,7 +974,7 @@ export function ApplianceDrawer({
                 );
               })}
               {systems.length === 0 && (
-                <p className="pane-desc">No systems configured yet — add them under Systems to build the monitoring plan.</p>
+                <p className="pane-desc">No systems configured yet â€” add them under Systems to build the monitoring plan.</p>
               )}
             </div>
           )}
@@ -970,7 +984,7 @@ export function ApplianceDrawer({
             <div className="tab-pane">
               <h3>FM Conventional Scan Lists</h3>
               <p className="pane-desc">
-                Configure analog frequencies, squelch thresholds, and CTCSS/DCS tone lockouts. Scan lists are a <strong>radiod</strong>-mode legacy feature — Trunk Recorder monitors the whole channel plan at once.
+                Configure analog frequencies, squelch thresholds, and CTCSS/DCS tone lockouts. Scan lists are a <strong>radiod</strong>-mode legacy feature â€” Trunk Recorder monitors the whole channel plan at once.
               </p>
 
               <div className="scanlist-container">
@@ -1113,15 +1127,17 @@ export function ApplianceDrawer({
                     <div className="box-header">
                       <strong>{sys.name}</strong>
                       <span>Protocol: {sys.protocol}</span>
-                      {sys.protocol === "p25" ? (
-                        <>
-                          <span>Control: {formatFrequency(sys.controlChannelHz)}</span>
-                          <span>NAC: {sys.nac != null ? sys.nac.toString(16).toUpperCase() : "—"}</span>
-                        </>
-                      ) : (
+                      {sys.protocol === "analog-fm" ? (
                         <>
                           <span>Freq: {formatFrequency(sys.frequencyHz)}</span>
                           <span>PL Tone: {sys.tone ?? "CSQ"}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Control: {formatFrequency(sys.controlChannelHz)}</span>
+                          {sys.protocol === "p25" && (
+                            <span>NAC: {sys.nac != null ? sys.nac.toString(16).toUpperCase() : "—"}</span>
+                          )}
                         </>
                       )}
                     </div>
@@ -1148,17 +1164,17 @@ export function ApplianceDrawer({
                     </div>
                     {talkgroupPanelSystem === sys.id && (
                       <div className="r-edit-box">
-                        {sys.protocol !== "p25" && (
-                          <p className="pane-desc">Conventional FM channels do not use talkgroups — Trunk Recorder assigns virtual IDs automatically. Talkgroups apply to P25 systems.</p>
+                        {(sys.protocol !== "p25" && sys.protocol !== "dmr") && (
+                          <p className="pane-desc">Conventional FM channels do not use talkgroups â€” Trunk Recorder assigns virtual IDs automatically. Talkgroups apply to P25 systems.</p>
                         )}
-                        {sys.protocol === "p25" && (
+                        {(sys.protocol === "p25" || sys.protocol === "dmr") && (
                           <>
                             {talkgroups.filter((tg) => tg.systemId === sys.id).length === 0 && (
                               <p className="pane-desc">No talkgroups yet. Import a RadioReference CSV or add one below.</p>
                             )}
                             {talkgroups.filter((tg) => tg.systemId === sys.id).map((tg) => (
                               <div key={tg.id} className="btn-row">
-                                <span>{tg.decimalId} · {tg.alphaTag} · {tg.mode?.toUpperCase() ?? "D"}</span>
+                                <span>{tg.decimalId} Â· {tg.alphaTag} Â· {tg.mode?.toUpperCase() ?? "D"}</span>
                                 <button type="button" onClick={() => setTalkgroupDraft(tg)}>Edit</button>
                                 <button type="button" className="danger-btn" onClick={async () => {
                                   try {
@@ -1175,10 +1191,10 @@ export function ApplianceDrawer({
                               <label>Decimal ID<input type="number" value={talkgroupDraft.decimalId} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, decimalId: Number(e.target.value) })} /></label>
                               <label>Mode
                                 <select value={talkgroupDraft.mode ?? "D"} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, mode: e.target.value })}>
-                                  <option value="D">D — Digital (P25)</option>
-                                  <option value="A">A — Analog</option>
-                                  <option value="M">M — Mixed</option>
-                                  <option value="T">T — TDMA</option>
+                                  <option value="D">D â€” Digital (P25)</option>
+                                  <option value="A">A â€” Analog</option>
+                                  <option value="M">M â€” Mixed</option>
+                                  <option value="T">T â€” TDMA</option>
                                 </select>
                               </label>
                               <label className="checkbox-label"><input type="checkbox" checked={talkgroupDraft.record ?? true} onChange={(e) => setTalkgroupDraft({ ...talkgroupDraft, record: e.target.checked })} /> Record (unchecked = never record)</label>
@@ -1242,15 +1258,16 @@ export function ApplianceDrawer({
                           protocol,
                           modulation: protocol === "analog-fm" ? draft.modulation ?? "NFM" : draft.modulation,
                           bandwidthHz: protocol === "analog-fm" ? draft.bandwidthHz ?? 12500 : draft.bandwidthHz,
-                          controlChannelHz: protocol === "p25" ? draft.controlChannelHz ?? 851012500 : draft.controlChannelHz,
+                          controlChannelHz: protocol === "p25" || protocol === "dmr" ? draft.controlChannelHz ?? 851012500 : draft.controlChannelHz,
                         }));
                       }}
                     >
                       <option value="p25">P25 Phase 1/2 Trunked</option>
+                      <option value="dmr">DMR Trunked (Tier III / MotoTRBO)</option>
                       <option value="analog-fm">Analog FM Conventional</option>
                     </select>
                   </label>
-                  {systemDraft.protocol === "p25" ? (
+                  {systemDraft.protocol === "p25" || systemDraft.protocol === "dmr" ? (
                     <>
                       <label>
                         Control Channel (MHz)
@@ -1262,23 +1279,36 @@ export function ApplianceDrawer({
                           }
                         />
                       </label>
-                      <label>
-                        NAC (hex)
-                        <input
-                          type="text"
-                          placeholder="e.g. 293 or B0C"
-                          value={systemDraft.nac != null ? systemDraft.nac.toString(16).toUpperCase() : ""}
-                          onChange={(e) =>
-                            setSystemDraft({ ...systemDraft, nac: parseNacHex(e.target.value) })
-                          }
-                        />
-                        <small className="pane-desc">P25 network access code, 3 hex digits (000–FFF)</small>
-                      </label>
+                      {systemDraft.protocol === "p25" && (
+                        <label>
+                          NAC (hex)
+                          <input
+                            type="text"
+                            placeholder="e.g. 293 or B0C"
+                            value={systemDraft.nac != null ? systemDraft.nac.toString(16).toUpperCase() : ""}
+                            onChange={(e) =>
+                              setSystemDraft({ ...systemDraft, nac: parseNacHex(e.target.value) })
+                            }
+                          />
+                          <small className="pane-desc">P25 network access code, 3 hex digits (000–FFF)</small>
+                        </label>
+                      )}
+                      {systemDraft.protocol === "p25" && (
+                        <label className="checkbox-label" title="Track encrypted calls for metadata without recording audio">
+                          <input
+                            type="checkbox"
+                            checked={systemDraft.monitorEncrypted ?? false}
+                            onChange={(e) =>
+                              setSystemDraft({ ...systemDraft, monitorEncrypted: e.target.checked })
+                            }
+                          /> Monitor encrypted (metadata only)
+                        </label>
+                      )}
                     </>
                   ) : (
                     <>
                       <label>Frequency (MHz)<MhzField valueHz={systemDraft.frequencyHz} placeholder="154.445" onChange={(frequencyHz) => setSystemDraft({ ...systemDraft, frequencyHz })} /></label>
-                      <label>Bandwidth (MHz)<MhzField valueHz={systemDraft.bandwidthHz} placeholder="0.0125" onChange={(bandwidthHz) => setSystemDraft({ ...systemDraft, bandwidthHz })} /><small className="pane-desc">NFM 0.0125 · FM 0.025 · narrow 0.00625</small></label>
+                      <label>Bandwidth (MHz)<MhzField valueHz={systemDraft.bandwidthHz} placeholder="0.0125" onChange={(bandwidthHz) => setSystemDraft({ ...systemDraft, bandwidthHz })} /><small className="pane-desc">NFM 0.0125 Â· FM 0.025 Â· narrow 0.00625</small></label>
                       <label>Modulation
                         <select value={systemDraft.modulation ?? "NFM"} onChange={(e) => setSystemDraft({ ...systemDraft, modulation: e.target.value })}>
                           <option value="NFM">NFM (12.5 kHz)</option>
@@ -1351,7 +1381,7 @@ export function ApplianceDrawer({
                       const preset = AI_STACK_PRESETS[e.target.value];
                       if (preset) setSettings({ ...settings, ...preset });
                     }}>
-                      <option value="">Choose preset…</option>
+                      <option value="">Choose presetâ€¦</option>
                       <option value="local-gpu">Local GPU</option>
                       <option value="cloud-hybrid">Cloud hybrid</option>
                       <option value="privacy-max">Privacy max</option>
@@ -1468,14 +1498,14 @@ export function ApplianceDrawer({
             <div className="tab-pane">
               <h3>Runtime Diagnostics</h3>
               {runtime && <div className="config-box"><span>Receivers: {runtime.receiverCount}</span><span>Decoder: {runtime.decoderConnected ? "connected" : "offline"}</span><span>AI: {runtime.aiWorkerStatus ?? "unknown"}</span><span>Queue backlog: {runtime.queueBacklog ?? 0}</span><span>Storage: {runtime.storagePath ?? "unknown"}</span><span>Persistence: {runtime.persistenceConnected ? "connected" : "file fallback"}</span><span>Active scan list: {runtime.activeScanList ?? "none"}</span></div>}
-              {diagnostics && <div className="config-box"><span>Capture: {diagnostics.capture.state} — {diagnostics.capture.detail}</span><span>Decoder: {diagnostics.decoder.state} — {diagnostics.decoder.detail}</span><span>Recording: {diagnostics.recording.state}</span><span>Ingestion: {diagnostics.ingestion.state}</span><span>AI: {diagnostics.ai.state} — {diagnostics.ai.detail}</span><span>Image: {diagnostics.imageVersion ?? "unknown"}</span><span>Config hash: {diagnostics.configHash ?? "—"}</span><span>Process ID: {diagnostics.processId ?? "—"}</span><span>Decoder heartbeat age: {diagnostics.decoderHeartbeatAgeSeconds ?? "—"}s</span><span>Control lock age: {diagnostics.decoderControlLockAgeSeconds ?? "—"}s</span>{diagnostics.failureReason && <span>Failure: {diagnostics.failureReason}</span>}{diagnostics.aiFailureReason && <span>AI failure: {diagnostics.aiFailureReason}</span>}{diagnostics.simulated && <span className="live-tag">SIMULATED</span>}</div>}
+              {diagnostics && <div className="config-box"><span>Capture: {diagnostics.capture.state} â€” {diagnostics.capture.detail}</span><span>Decoder: {diagnostics.decoder.state} â€” {diagnostics.decoder.detail}</span><span>Recording: {diagnostics.recording.state}</span><span>Ingestion: {diagnostics.ingestion.state}</span><span>AI: {diagnostics.ai.state} â€” {diagnostics.ai.detail}</span><span>Image: {diagnostics.imageVersion ?? "unknown"}</span><span>Config hash: {diagnostics.configHash ?? "â€”"}</span><span>Process ID: {diagnostics.processId ?? "â€”"}</span><span>Decoder heartbeat age: {diagnostics.decoderHeartbeatAgeSeconds ?? "â€”"}s</span><span>Control lock age: {diagnostics.decoderControlLockAgeSeconds ?? "â€”"}s</span>{diagnostics.failureReason && <span>Failure: {diagnostics.failureReason}</span>}{diagnostics.aiFailureReason && <span>AI failure: {diagnostics.aiFailureReason}</span>}{diagnostics.simulated && <span className="live-tag">SIMULATED</span>}</div>}
               <div className="btn-row">
                 <button
                   type="button"
                   onClick={async () => {
                     try {
                       await applyDecoderConfig();
-                      setStatusMessage("Apply requested — capture reloading with saved settings");
+                      setStatusMessage("Apply requested â€” capture reloading with saved settings");
                     } catch (error) {
                       setStatusMessage(error instanceof Error ? error.message : "Apply failed");
                     }
@@ -1525,7 +1555,7 @@ export function ApplianceDrawer({
                     <div key={`${entry.resourceId}-${index}`} className="audit-row">
                       <span>{new Date(entry.occurredAt).toLocaleString()}</span>
                       <span>{entry.action}</span>
-                      <span>{entry.resourceType} · {entry.resourceId}</span>
+                      <span>{entry.resourceType} Â· {entry.resourceId}</span>
                     </div>
                   ))}
                   {auditLog.length === 0 && <span>No audit entries recorded.</span>}

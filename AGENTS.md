@@ -21,6 +21,7 @@ TrunkScope is a self-hosted, receive-only SDR scanner appliance. The **single-co
 Supported targets:
 
 - P25 Phase 1/2 trunking through Trunk Recorder.
+- Trunked DMR (Tier III / MotoTRBO) through Trunk Recorder: protocol `dmr`, control channels + talkgroups like P25, `dmrRecorders` pool per source (default 4), calls categorized "DMR" at ingestion.
 - Conventional analog NFM/FM with squelch and CTCSS/DCS support.
 - Local SDRplay RSP1B, RTL-SDR, and Airspy-compatible receivers.
 - Remote SDR nodes over trusted LAN/VPN through SoapyRemote.
@@ -107,6 +108,8 @@ Supported targets:
 - **Trunk Recorder fidelity:** talkgroup CSV uses canonical RR column order with `Mode` (A/D/M/T) and `Priority` (-1 when record off); conventional systems emit sanitized `shortName: "FM"` (display names never reach filenames), system squelch seeds from the FM profile, and `decodeMDC` is profile-driven.
 - **TR multi-channel:** sources emit `digitalRecorders`/`analogRecorders` (defaults 6/4, per-receiver overridable); global `minDuration 1.0`, `maxDuration 3600`, `controlRetuneLimit` sized to the control plan, `compressWav true`, organized `filenameFormat`. TR monitors every planned channel in a source's coverage simultaneously — no scanning; the Monitoring tab shows coverage/recorder pools (radiod scan lists are legacy, radiod-mode only).
 - **Ingestion is idempotent:** WS + upload script + sidecar poller may deliver the same call; audio-path aliasing (`audio_alias` in `AppState`) merges them into one call, and `enqueued_calls` guarantees the AI pipeline runs once. Playback resolves audio keys against the configured calls root (custom roots never 404).
+- **Stale-call sweep** (`decoder::spawn_stale_sweep`): decoder calls Active longer than 5 minutes without an event are finalized metadata-only; a late sidecar still attaches audio via upsert.
+- P25 systems expose `monitorEncrypted` (Trunk Recorder experimental): metadata-only tracking of encrypted calls; TrunkScope ingestion already withholds encrypted audio everywhere.
 - **Integrations tab:** stack presets seed URLs; transcribe/summary models auto-discover on URL change (debounced) with manual override fallback; derived ASR profile shown read-only.
 - **First-run wizard** uses the same model discovery flow as the integrations tab.
 

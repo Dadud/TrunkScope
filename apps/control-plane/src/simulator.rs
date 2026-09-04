@@ -27,6 +27,7 @@ pub fn spawn(state: Arc<AppState>) {
         auto_tune: None,
         digital_recorders: None,
         analog_recorders: None,
+        dmr_recorders: None,
         capabilities: ReceiverCapabilities {
             minimum_frequency_hz: 24_000_000,
             maximum_frequency_hz: 1_766_000_000,
