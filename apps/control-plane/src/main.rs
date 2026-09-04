@@ -1,4 +1,4 @@
-﻿mod api;
+mod api;
 mod apply;
 mod auth;
 mod decoder;
@@ -116,6 +116,64 @@ async fn main() -> Result<()> {
     // starts with; without this the apply task would bounce the decoder
     // seconds after every container start.
     state.mark_config_applied();
+    // In decoder mode the control plane fabricates the operator-visible
+    // receiver entry. Keep its state honest: MONITORING only while Trunk
+    // Recorder is actually alive, DEGRADED when the decoder is unreachable.
+    {
+        let ticker_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if ticker_state
+                    .settings
+                    .read()
+                    .expect("settings lock poisoned")
+                    .radio_mode
+                    != "decoder"
+                {
+                    continue;
+                }
+                let recent_event = ticker_state
+                    .decoder_last_event
+                    .read()
+                    .expect("decoder lock poisoned")
+                    .map(|timestamp| (chrono::Utc::now() - timestamp).num_seconds() <= 45)
+                    .unwrap_or(false);
+                let connected = *ticker_state
+                    .decoder_connected
+                    .read()
+                    .expect("decoder lock poisoned")
+                    || recent_event
+                    || api::decoder_heartbeat_fresh();
+                let next = if connected {
+                    ReceiverState::Monitoring
+                } else {
+                    ReceiverState::Degraded
+                };
+                let device = ticker_state
+                    .settings
+                    .read()
+                    .expect("settings lock poisoned")
+                    .radio_device
+                    .clone();
+                for receiver in ticker_state
+                    .receivers
+                    .write()
+                    .expect("receiver lock poisoned")
+                    .iter_mut()
+                {
+                    let matches_synthetic = receiver.serial == device
+                        && matches!(
+                            receiver.state,
+                            ReceiverState::Monitoring | ReceiverState::Degraded
+                        );
+                    if matches_synthetic && receiver.state != next {
+                        receiver.state = next;
+                    }
+                }
+            }
+        });
+    }
     processor::spawn(Arc::clone(&state));
     file_ingest::spawn(Arc::clone(&state));
     // An enabled scan list is an operator intent, not merely UI metadata.

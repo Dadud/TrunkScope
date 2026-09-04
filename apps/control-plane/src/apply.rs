@@ -63,8 +63,12 @@ pub fn spawn(state: Arc<AppState>) {
 }
 
 async fn supervisor_restart() -> Result<(), String> {
+    // supervisord is started with -c /etc/supervisor/conf.d/trunkscope.conf;
+    // supervisorctl only finds the socket when handed the same config file.
+    let conf = std::env::var("TRUNKSCOPE_SUPERVISORD_CONF")
+        .unwrap_or_else(|_| "/etc/supervisor/conf.d/trunkscope.conf".into());
     let output = tokio::process::Command::new("supervisorctl")
-        .args(["restart", "decoder"])
+        .args(["-c", &conf, "restart", "decoder"])
         .output()
         .await
         .map_err(|error| format!("supervisorctl unavailable: {error}"))?;

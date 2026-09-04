@@ -544,7 +544,29 @@ export function ApplianceDrawer({
                   <button
                     type="button"
                     className="primary-btn"
-                    onClick={() => setShowAddReceiver(!showAddReceiver)}
+                    onClick={() => {
+                      // The draft is shared with the Configure flow; a fresh
+                      // receiver must not inherit another receiver's values.
+                      if (!showAddReceiver) {
+                        const preset = devicePresets.find((item) => item.driver === "sdrplay");
+                        const submodel = preset?.submodels[0];
+                        setReceiverDraft({
+                          label: "New SDR",
+                          driver: "sdrplay",
+                          serial: "",
+                          centerFrequencyHz: submodel?.centerFrequencyHz ?? 154_000_000,
+                          sampleRateHz: submodel?.sampleRateHz ?? 2_400_000,
+                          gainDb: submodel?.gainDb ?? 40,
+                          ppm: submodel?.ppm ?? 0,
+                          enabled: true,
+                          role: "general",
+                          soapyIndex: 0,
+                          autoTune: false,
+                        });
+                        setSubmodelId(submodel?.id ?? "");
+                      }
+                      setShowAddReceiver(!showAddReceiver);
+                    }}
                   >
                     {showAddReceiver ? "Cancel" : "+ Add Receiver"}
                   </button>

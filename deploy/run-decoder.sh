@@ -22,4 +22,18 @@ if [ ! -f "$CONFIG" ]; then
   echo "decoder config not yet written at $CONFIG"
 fi
 
-exec trunk-recorder --config="$CONFIG"
+# Trunk Recorder runs in the background so the wrapper can publish a
+# liveness heartbeat: the control plane's verify check and decoder status
+# read this file to distinguish "process alive" from "config present".
+CALLS_DIR="${TRUNKSCOPE_CALLS_PATH:-/var/lib/trunkscope/calls}"
+touch "$CALLS_DIR/.decoder-health"
+
+trunk-recorder --config="$CONFIG" &
+TR_PID=$!
+
+while kill -0 "$TR_PID" 2>/dev/null; do
+  sleep 10
+  touch "$CALLS_DIR/.decoder-health"
+done
+
+wait "$TR_PID"

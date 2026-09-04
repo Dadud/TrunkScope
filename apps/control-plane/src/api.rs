@@ -209,7 +209,7 @@ async fn readiness(State(state): State<Arc<AppState>>) -> StatusCode {
     StatusCode::OK
 }
 
-fn decoder_heartbeat_fresh() -> bool {
+pub(crate) fn decoder_heartbeat_fresh() -> bool {
     let path = std::env::var("TRUNKSCOPE_CALLS_PATH")
         .unwrap_or_else(|_| "/var/lib/trunkscope/calls".into());
     std::fs::metadata(std::path::Path::new(&path).join(".decoder-health"))
