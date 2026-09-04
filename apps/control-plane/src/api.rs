@@ -1477,12 +1477,20 @@ async fn receiver_probe(
     };
     let executable = std::env::var("TRUNKSCOPE_RADIOD_PATH")
         .unwrap_or_else(|_| "/usr/local/bin/trunkscope-radiod".into());
+    // Probe must open the device exactly like the capture does: the raw
+    // serial often lacks the soapy index that makes SoapySDR find the stick.
+    let fallback_device = {
+        let settings = state.settings.read().expect("settings lock poisoned");
+        settings.radio_device.clone()
+    };
+    let device_string =
+        receiver_presets::device_string(&device, &fallback_device, device.soapy_index.unwrap_or(0));
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         tokio::process::Command::new(executable)
             .arg("--capabilities")
             .arg("--device")
-            .arg(&device.serial)
+            .arg(&device_string)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output(),

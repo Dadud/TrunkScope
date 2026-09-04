@@ -11,15 +11,15 @@ export type AppSettings = { schemaVersion?: number; homeLabel: string; homeLatit
 export async function getSettings(): Promise<AppSettings> { const response = await fetch("/api/v1/settings"); if (!response.ok) throw new Error(`API returned ${response.status} (${new URL(response.url).pathname})`); return response.json() as Promise<AppSettings>; }
 export async function saveSettings(settings: AppSettings): Promise<AppSettings> { const response = await fetch("/api/v1/settings", { method: "PUT", headers: { "content-type": "application/json" }, credentials: "include", body: JSON.stringify(settings) }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : response.status === 400 ? "Check the coordinates and home label" : `API returned ${response.status} (${new URL(response.url).pathname})`); return response.json() as Promise<AppSettings>; }
 export async function getRuntime(): Promise<RuntimeStatus> { const response = await fetch("/api/v1/runtime"); if (!response.ok) throw new Error(`API returned ${response.status} (${new URL(response.url).pathname})`); return response.json() as Promise<RuntimeStatus>; }
-export async function receiverAction(id: string, action: "probe" | "start" | "stop" | "restart"): Promise<Receiver> { const response = await fetch(`/api/v1/receivers/${id}/${action}`, { method: "POST", credentials: "include" }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `API returned ${response.status} (${new URL(response.url).pathname})`); return response.json() as Promise<Receiver>; }
+export async function receiverAction(id: string, action: "probe" | "start" | "stop" | "restart"): Promise<Receiver> { const response = await fetch(`/api/v1/receivers/${id}/${action}`, { method: "POST", credentials: "include" }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : await apiError(response)); return response.json() as Promise<Receiver>; }
 export type ReceiverInput = Pick<Receiver, "label" | "driver" | "serial" | "centerFrequencyHz" | "sampleRateHz" | "gainDb" | "ppm" | "enabled" | "role" | "soapyIndex" | "autoTune" | "digitalRecorders" | "analogRecorders" | "dmrRecorders">;
 export type ReceiverSubmodelPreset = { id: string; label: string; sampleRateHz: number; gainDb: number; ppm: number; centerFrequencyHz: number; notes?: string };
 export type ReceiverDevicePreset = { driver: Receiver["driver"]; label: string; submodels: ReceiverSubmodelPreset[] };
 export async function getReceiverPresets(): Promise<ReceiverDevicePreset[]> { const response = await fetch("/api/v1/receivers/presets"); if (!response.ok) throw new Error(`Presets unavailable (${response.status})`); return response.json() as Promise<ReceiverDevicePreset[]>; }
 export type DiscoveredDevice = { index: number; driver: string; label: string; serial: string; args: string; suggestedDriver: Receiver["driver"] };
 export async function discoverReceivers(): Promise<DiscoveredDevice[]> { const response = await fetch("/api/v1/receivers/discover", { credentials: "include" }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `Discovery failed (${response.status})`); const body = await response.json() as { devices: DiscoveredDevice[] }; return body.devices; }
-export async function getReceiverCapabilities(id: string): Promise<Receiver["capabilities"]> { const response = await fetch(`/api/v1/receivers/${id}/capabilities`, { credentials: "include" }); if (!response.ok) throw new Error(`Capabilities unavailable (${response.status})`); return response.json() as Promise<Receiver["capabilities"]>; }
-export async function verifyReceiver(id: string): Promise<{ passed: boolean; checks: Array<{ name: string; passed: boolean; detail: string }> }> { const response = await fetch(`/api/v1/receivers/${id}/verify`, { method: "POST", credentials: "include" }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : `Verify failed (${response.status})`); return response.json() as Promise<{ passed: boolean; checks: Array<{ name: string; passed: boolean; detail: string }> }>; }
+export async function getReceiverCapabilities(id: string): Promise<Receiver["capabilities"]> { const response = await fetch(`/api/v1/receivers/${id}/capabilities`, { credentials: "include" }); if (!response.ok) throw new Error(await apiError(response)); return response.json() as Promise<Receiver["capabilities"]>; }
+export async function verifyReceiver(id: string): Promise<{ passed: boolean; checks: Array<{ name: string; passed: boolean; detail: string }> }> { const response = await fetch(`/api/v1/receivers/${id}/verify`, { method: "POST", credentials: "include" }); if (!response.ok) throw new Error(response.status === 401 ? "Administrator login required" : await apiError(response)); return response.json() as Promise<{ passed: boolean; checks: Array<{ name: string; passed: boolean; detail: string }> }>; }
 export type IntegrationStatus = { configured: boolean; provider?: string; model?: string; mode?: string; keywordRules?: number };
 export type DiscoveredModels = { models: string[]; source: string; catalogUrl: string };
 export type TranscribeModelDiscoveryInput = {
@@ -32,8 +32,8 @@ export type SummaryModelDiscoveryInput = {
   summaryProvider?: string;
   summaryApiKey?: string;
 };
-async function discoveryError(response: Response): Promise<string> {
-  if (response.status === 401) return "Administrator login required";
+async function apiError(response: Response): Promise<string> {
+  const path = new URL(response.url).pathname;
   let detail = "";
   try {
     detail = (await response.text()).trim();
@@ -41,7 +41,12 @@ async function discoveryError(response: Response): Promise<string> {
     detail = "";
   }
   const suffix = detail ? `: ${detail.slice(0, 240)}` : "";
-  return `Model discovery failed (${response.status})${suffix}`;
+  return `API returned ${response.status} (${path})${suffix}`;
+}
+async function discoveryError(response: Response): Promise<string> {
+  if (response.status === 401) return "Administrator login required";
+  const detail = await apiError(response);
+  return `Model discovery ${detail.charAt(0).toLowerCase()}${detail.slice(1)}`;
 }
 export async function discoverTranscribeModels(
   overrides?: TranscribeModelDiscoveryInput,
