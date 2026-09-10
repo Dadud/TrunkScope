@@ -18,7 +18,8 @@ function enrichmentTaskLabel(task: string) {
 
 function enrichmentResult(item: Record<string, unknown>) {
   const ignored = new Set(["status", "confidence", "model", "provider", "promptVersion", "evidence", "raw", "error", "detail", "reason"]);
-  return Object.entries(item)
+  const source = item.parsed && typeof item.parsed === "object" ? item.parsed as Record<string, unknown> : item;
+  return Object.entries(source)
     .filter(([key, value]) => !ignored.has(key) && (typeof value === "string" || typeof value === "number" || typeof value === "boolean"))
     .map(([key, value]) => `${key.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())}: ${String(value)}`);
 }
