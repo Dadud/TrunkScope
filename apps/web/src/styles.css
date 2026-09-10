@@ -1686,6 +1686,15 @@ button, input, select, textarea {
 .form-grid > * { min-width: 0; }
 .form-grid > .full-width { grid-column: 1 / -1; }
 .enrichment-settings { overflow-wrap: anywhere; }
+.enrichment-row-title { display:flex; align-items:center; gap:8px; margin-top:10px; }
+.enrichment-row-title strong { text-transform:none; }
+.enrichment-status { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-dim); }
+.enrichment-status.complete { color:#7dd3a7; }
+.enrichment-status.failed { color:#fca5a5; }
+.enrichment-meta { display:block; color:var(--text-dim); font-size:12px; margin:3px 0 5px; }
+.enrichment-result { margin:3px 0; color:var(--text); }
+.ai-enrichment-list blockquote { margin:6px 0; padding:6px 10px; border-left:2px solid var(--accent); color:var(--text-dim); font-size:12px; }
+.ai-enrichment-list pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; color:var(--text-dim); }
 .enrichment-task-heading button { max-width: 100%; white-space: normal; }
 .form-grid input:not([type="checkbox"]), .form-grid select, .form-grid textarea { width: 100%; min-width: 0; box-sizing: border-box; }
 .form-grid input, .form-grid select, .form-grid textarea {

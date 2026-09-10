@@ -1,6 +1,27 @@
 import { useState, useMemo } from "react";
 import type { Call } from "../types";
 import { formatElapsed, formatFrequency } from "../format";
+
+const enrichmentLabels: Record<string, string> = {
+  "address-normalization": "Address",
+  "event-tagging": "Event category",
+  "unit-extraction": "Units and call signs",
+  "tone-classification": "Dispatch tone",
+  correlation: "Related calls",
+  "map-placement": "Map placement",
+  location: "Location",
+};
+
+function enrichmentTaskLabel(task: string) {
+  return enrichmentLabels[task] ?? task.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function enrichmentResult(item: Record<string, unknown>) {
+  const ignored = new Set(["status", "confidence", "model", "provider", "promptVersion", "evidence", "raw", "error", "detail", "reason"]);
+  return Object.entries(item)
+    .filter(([key, value]) => !ignored.has(key) && (typeof value === "string" || typeof value === "number" || typeof value === "boolean"))
+    .map(([key, value]) => `${key.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())}: ${String(value)}`);
+}
 import { callAudioUrl, purgeCalls, undoPurgeCalls, retryCallEnrichment } from "../api";
 
 interface ArchiveDrawerProps {
@@ -193,12 +214,12 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
                         const canRetry = ["unit-extraction", "event-tagging", "address-normalization", "correlation", "map-placement"].includes(task)
                           && call.state === "complete" && call.encryption === "clear" && Boolean(call.transcript?.trim());
                         return <div key={task}>
-                          <strong>{task}</strong>
-                          <span>{String(item.status ?? "recorded")} · confidence {typeof item.confidence === "number" ? item.confidence.toFixed(2) : "—"}</span>
-                          {typeof item.model === "string" && <small> · {item.model}</small>}
+                          <div className="enrichment-row-title"><strong>{enrichmentTaskLabel(task)}</strong><span className={`enrichment-status ${String(item.status ?? "recorded")}`}>{String(item.status ?? "recorded")}</span></div>
+                          <span className="enrichment-meta">Confidence {typeof item.confidence === "number" ? item.confidence.toFixed(2) : "not reported"}{typeof item.model === "string" && ` · ${item.model}`}</span>
+                          {enrichmentResult(item).map((result) => <p className="enrichment-result" key={result}>{result}</p>)}
                           {typeof item.error === "string" && <p role="alert">{item.error}{typeof item.detail === "string" ? `: ${item.detail}` : ""}</p>}
                           {typeof item.reason === "string" && <p>{item.reason}</p>}
-                          {typeof item.raw === "string" && <p>{item.raw}</p>}
+                          {typeof item.raw === "string" && <details><summary>Provider response</summary><pre>{item.raw}</pre></details>}
                           {Array.isArray(item.evidence) && item.evidence.map((evidence, index) => {
                             const text = typeof evidence === "string" ? evidence : evidence && typeof evidence === "object" && typeof evidence.text === "string" ? evidence.text : null;
                             return text ? <blockquote key={index}>{text}</blockquote> : null;
