@@ -1,4 +1,5 @@
 import { useState, useEffect, type ChangeEvent } from "react";
+import { EnrichmentActions } from "./EnrichmentActions";
 import type { Receiver, Snapshot } from "../types";
 import {
   applyDecoderConfig,
@@ -56,14 +57,15 @@ import {
   type SystemProfile,
   type Talkgroup,
 } from "../api";
-import { SitesEditor } from "../SitesEditor";
 import { IntegrationModelField } from "./IntegrationModelField";
+import { EnrichmentSettings } from "./EnrichmentSettings";
 import { MhzField } from "./MhzField";
 import { applySubmodelPreset, presetSummary } from "../receiverPresets";
 import { deriveAiProfile, pickSummaryModel, pickTranscribeModel } from "../integrationModels";
-import { formatFrequency, signalQuality } from "../format";
+import { formatFrequency, hzToMhz, mhzToHz, signalQuality } from "../format";
 
 interface ApplianceDrawerProps {
+  section?: "radio" | "settings";
   isOpen: boolean;
   onClose: () => void;
   snapshot: Snapshot;
@@ -71,7 +73,7 @@ interface ApplianceDrawerProps {
   onRemoveReceiver: (id: string) => void;
 }
 
-type Tab = "sources" | "systems" | "monitoring" | "integrations" | "policy" | "security" | "diagnostics";
+type Tab = "overview" | "sources" | "trunked" | "conventional" | "rf" | "monitoring" | "settings-home" | "integrations" | "policy" | "notifications" | "retention" | "security" | "diagnostics";
 
 const DRIVER_OPTIONS: Array<{ value: ReceiverInput["driver"]; label: string }> = [
   { value: "sdrplay", label: "SDRplay RSP" },
@@ -106,14 +108,20 @@ const parseNacHex = (raw: string): number | undefined => {
 };
 
 export function ApplianceDrawer({
+  section = "radio",
   isOpen,
   onClose,
   snapshot,
   onUpdateReceiver,
   onRemoveReceiver,
 }: ApplianceDrawerProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("sources");
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const systemView = activeTab === "conventional" ? "conventional" : "trunked";
+  useEffect(() => {
+    if (isOpen) setActiveTab(section === "settings" ? "settings-home" : "overview");
+  }, [isOpen, section]);
   const [statusMessage, setStatusMessage] = useState("");
+  const [hasDrafts, setHasDrafts] = useState(false);
   const [runtime, setRuntime] = useState<Awaited<ReturnType<typeof getRuntime>>>();
   const [diagnostics, setDiagnostics] = useState<Awaited<ReturnType<typeof getDiagnostics>>>();
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
@@ -134,6 +142,7 @@ export function ApplianceDrawer({
     centerFrequencyHz: 154_000_000,
     sampleRateHz: 2_400_000,
     gainDb: 40,
+    gainSettings: {},
     ppm: 0,
     enabled: true,
     role: "general",
@@ -223,10 +232,10 @@ export function ApplianceDrawer({
     ]).then(([transcribe, summary, geocoder, discord]) => {
       setIntegrationStatus({ transcribe, summary, geocoder, discord });
     });
-    // Re-fetching per tab switch keeps every pane honest (receiver states,
-    // diagnostics, decoder config) instead of showing a snapshot from when
-    // the drawer first opened.
-  }, [isOpen, activeTab]);
+    // Load once when the panel opens. Keeping drafts in memory while moving
+    // between focused screens prevents partially entered receiver, channel,
+    // and settings changes from being overwritten.
+  }, [isOpen]);
 
   const refreshTranscribeModels = async () => {
     if (!settings?.transcribeUrl.trim()) {
@@ -383,6 +392,7 @@ export function ApplianceDrawer({
       const updated = await updateReceiver(id, receiverDraft);
       onUpdateReceiver(updated);
       setEditingReceiverId(null);
+      setHasDrafts(false);
       setStatusMessage("Receiver settings saved — the capture reloads automatically.");
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : "Save failed");
@@ -394,6 +404,7 @@ export function ApplianceDrawer({
       const created = await createReceiver(receiverDraft);
       onUpdateReceiver(created);
       setShowAddReceiver(false);
+      setHasDrafts(false);
       setStatusMessage("Receiver created successfully");
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : "Create failed");
@@ -426,12 +437,54 @@ export function ApplianceDrawer({
 
   // Systems save
   const handleSaveSystem = async () => {
+    setStatusMessage("Saving configuration…");
     try {
       const saved = await saveSystem(systemDraft);
       setSystems((prev) => [...prev.filter((s) => s.id !== saved.id), saved]);
-      setStatusMessage("System saved and validated");
+      setSystemDraft(saved);
+      setHasDrafts(false);
+      setStatusMessage("Applied — decoder configuration is updating");
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : "System save failed");
+    }
+  };
+
+  const handleSaveAndAddChannel = async () => {
+    setStatusMessage("Saving channel…");
+    try {
+      const saved = await saveSystem(systemDraft);
+      setSystems((prev) => [...prev.filter((system) => system.id !== saved.id), saved]);
+      setSystemDraft({
+        id: "00000000-0000-0000-0000-000000000000",
+        name: "New conventional channel",
+        protocol: saved.protocol,
+        frequencyHz: saved.frequencyHz,
+        bandwidthHz: saved.bandwidthHz,
+        modulation: saved.modulation,
+        receiverId: saved.receiverId,
+        sites: [],
+      });
+      setHasDrafts(false);
+      setStatusMessage("Applied — channel saved. Enter the next channel.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Channel save failed");
+    }
+  };
+
+  const updateSystemSites = (systemId: string, update: (sites: NonNullable<SystemProfile["sites"]>) => NonNullable<SystemProfile["sites"]>) => {
+    setSystems((items) => items.map((system) => system.id === systemId ? { ...system, sites: update(system.sites ?? []) } : system));
+  };
+
+  const saveSystemSites = async (systemId: string) => {
+    const system = systems.find((item) => item.id === systemId);
+    if (!system) return;
+    setStatusMessage("Saving site plan…");
+    try {
+      const saved = await saveSystem(system);
+      setSystems((items) => items.map((item) => item.id === saved.id ? saved : item));
+      setStatusMessage("Applied — site plan saved");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Site plan save failed");
     }
   };
 
@@ -452,10 +505,12 @@ export function ApplianceDrawer({
   // Settings save
   const handleSaveSettings = async () => {
     if (!settings) return;
+    setStatusMessage("Saving settings…");
     try {
       const updated = await saveSettings(settings);
       setSettings(updated);
-      setStatusMessage("Appliance settings saved");
+      setHasDrafts(false);
+      setStatusMessage("Applied — settings saved");
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : "Save failed");
     }
@@ -476,53 +531,31 @@ export function ApplianceDrawer({
     }
   };
 
+  const requestClose = () => {
+    if (hasDrafts && !window.confirm("Discard unsaved changes?")) return;
+    setHasDrafts(false);
+    onClose();
+  };
+
   return (
-    <div className="tactical-drawer-backdrop" onClick={onClose}>
-      <aside className="tactical-drawer wide-drawer" onClick={(e) => e.stopPropagation()}>
+    <div className="tactical-drawer-backdrop" onClick={requestClose}>
+      <aside className="tactical-drawer wide-drawer" onClick={(e) => e.stopPropagation()} onInputCapture={() => setHasDrafts(true)}>
         <div className="drawer-header">
           <div>
-            <small className="eyebrow">APPLIANCE CONTROL</small>
-            <h2>System Administration</h2>
+            <small className="eyebrow">TRUNKSCOPE</small>
+            <h2>{section === "settings" ? "Settings" : "Radio Setup"}</h2>
           </div>
-          <button type="button" className="drawer-close-btn" onClick={onClose}>
+          <button type="button" className="drawer-close-btn" onClick={requestClose}>
             &times;
           </button>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="appliance-tabs">
-          <button
-            type="button"
-            className={activeTab === "sources" ? "active" : ""}
-            onClick={() => setActiveTab("sources")}
-          >
-            📡 SOURCES ({snapshot.receivers.length})
-          </button>
-          <button
-            type="button"
-            className={activeTab === "systems" ? "active" : ""}
-            onClick={() => setActiveTab("systems")}
-          >
-            ⚡ SYSTEMS
-          </button>
-          <button
-            type="button"
-            className={activeTab === "monitoring" ? "active" : ""}
-            onClick={() => setActiveTab("monitoring")}
-          >
-            🎧 MONITORING
-          </button>
-          <button type="button" className={activeTab === "integrations" ? "active" : ""} onClick={() => setActiveTab("integrations")}>🤖 AI & INTEGRATIONS</button>
-          <button type="button" className={activeTab === "policy" ? "active" : ""} onClick={() => setActiveTab("policy")}>🌐 POLICY</button>
-          <button
-            type="button"
-            className={activeTab === "security" ? "active" : ""}
-            onClick={() => setActiveTab("security")}
-          >
-            🔒 SECURITY
-          </button>
-          <button type="button" className={activeTab === "diagnostics" ? "active" : ""} onClick={() => setActiveTab("diagnostics")}>🩺 DIAGNOSTICS</button>
-        </div>
+        {activeTab !== "overview" && activeTab !== "settings-home" && (
+          <div className="panel-crumb">
+            <button type="button" className="back-btn" onClick={() => setActiveTab(section === "settings" ? "settings-home" : "overview")}>← Back</button>
+            <span>{activeTab === "sources" ? "Receivers" : activeTab === "conventional" ? "Conventional channels" : activeTab === "trunked" ? "Trunked systems" : activeTab === "rf" ? "RF activity" : activeTab === "monitoring" ? "Monitoring plan" : activeTab === "integrations" ? "Transcription & summaries" : activeTab === "notifications" ? "Notifications" : activeTab === "retention" ? "Recording retention" : activeTab === "policy" ? "Public feed" : activeTab === "security" ? "Access & sharing" : "Diagnostics"}</span>
+          </div>
+        )}
 
         {statusMessage && (
           <div
@@ -533,18 +566,76 @@ export function ApplianceDrawer({
         )}
 
         <div className="appliance-body">
+          {activeTab === "overview" && (
+            <div className="tab-pane setup-home">
+              <h3>Radio Setup</h3>
+              <p className="pane-desc">Set up receivers and what each one monitors. Saved changes apply to the decoder automatically.</p>
+              <div className="setup-status-grid">
+                <div className="config-box"><strong>{snapshot.receivers.length}</strong><span>receivers configured</span></div>
+                <div className="config-box"><strong>{systems.filter((system) => !(system.protocol === "p25" || system.protocol === "dmr")).length}</strong><span>conventional channels</span></div>
+                <div className="config-box"><strong>{systems.filter((system) => system.protocol === "p25" || system.protocol === "dmr").length}</strong><span>trunked systems</span></div>
+                <div className="config-box"><strong>{diagnostics?.decoder.state ?? "Unavailable"}</strong><span>decoder status</span></div>
+              </div>
+              <div className="setup-menu">
+                <button type="button" onClick={() => setActiveTab("sources")}><strong>Receivers</strong><span>Add hardware, tune coverage, recorder pools, and advanced gain controls.</span></button>
+                <button type="button" onClick={() => setActiveTab("conventional")}><strong>Conventional channels</strong><span>Analog FM, fixed P25, and fixed DMR channels.</span></button>
+                <button type="button" onClick={() => setActiveTab("trunked")}><strong>Trunked systems</strong><span>P25 and DMR systems, sites, control channels, and talkgroups.</span></button>
+                <button type="button" onClick={() => setActiveTab("monitoring")}><strong>Monitoring plan</strong><span>Receiver coverage, assigned channels, and recorder capacity.</span></button>
+                <button type="button" onClick={() => setActiveTab("rf")}><strong>RF activity</strong><span>Signal level and gain adjustment while the receiver is operating.</span></button>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "settings-home" && (
+            <div className="tab-pane setup-home">
+              <h3>Settings</h3>
+              <p className="pane-desc">Manage processing, notifications, access, and appliance diagnostics.</p>
+              <div className="setup-menu">
+                <button type="button" onClick={() => setActiveTab("integrations")}><strong>Transcription & summaries</strong><span>ASR, summary models, prompts, lookback period, vocabulary, and map location context.</span></button>
+                <button type="button" onClick={() => setActiveTab("notifications")}><strong>Notifications</strong><span>Discord webhooks and alert rules.</span></button>
+                <button type="button" onClick={() => setActiveTab("retention")}><strong>Recording retention</strong><span>How long recordings and transcripts are kept.</span></button>
+                <button type="button" onClick={() => setActiveTab("policy")}><strong>Public feed</strong><span>Delayed public access and allowed radio traffic.</span></button>
+                <button type="button" onClick={() => setActiveTab("security")}><strong>Access & sharing</strong><span>Administrator password, sharing policy, and audit history.</span></button>
+                <button type="button" onClick={() => setActiveTab("diagnostics")}><strong>Diagnostics</strong><span>Runtime status, decoder configuration, and advanced troubleshooting.</span></button>
+              </div>
+            </div>
+          )}
+          {activeTab === "rf" && (
+            <div className="tab-pane">
+              <h3>RF Activity</h3>
+              <p className="pane-desc">Tune gain while watching the real receiver signal and noise floor. Changes are saved per receiver.</p>
+              {snapshot.receivers.map((receiver) => {
+                const signal = receiver.health.signalDbfs;
+                const noise = receiver.health.noiseDbfs;
+                const telemetryAge = Date.now() - new Date(receiver.health.updatedAt).getTime();
+                const telemetryFresh = Number.isFinite(telemetryAge) && telemetryAge < 15_000;
+                const margin = signal - noise;
+                const level = Math.max(0, Math.min(100, (signal + 120) / 1.2));
+                return <div className="config-box" key={receiver.id}>
+                  <div className="box-header"><strong>{receiver.label}</strong><span>{receiver.state.toUpperCase()}</span><span>{receiver.driver}</span></div>
+                  <div className="rf-meter"><span>{telemetryFresh ? `Signal ${signal.toFixed(1)} dBFS` : "Signal telemetry unavailable"}</span><div className="rf-meter-track"><i style={{ width: telemetryFresh ? `${level}%` : "0%" }} /></div></div>
+                  <div className="rf-stats"><span>Noise floor {telemetryFresh ? `${noise.toFixed(1)} dBFS` : "—"}</span><span>Margin {telemetryFresh ? `${margin.toFixed(1)} dB` : "—"}</span><span>Drops {receiver.health.droppedSamples}</span></div>
+                  <div className="form-grid">
+                    <label>{receiver.driver === "sdrplay" ? "IF gain reduction (dB)" : "Gain (dB)"}<input type="number" min={receiver.driver === "sdrplay" ? 20 : 0} max={receiver.driver === "sdrplay" ? 59 : 100} step="1" value={receiver.gainDb ?? 40} onChange={(e) => { const gainDb = Number(e.target.value); void updateReceiver(receiver.id, { label: receiver.label, driver: receiver.driver, serial: receiver.serial, centerFrequencyHz: receiver.centerFrequencyHz, sampleRateHz: receiver.sampleRateHz, gainDb, gainSettings: receiver.gainSettings, ppm: receiver.ppm, enabled: receiver.enabled, role: receiver.role, soapyIndex: receiver.soapyIndex, autoTune: receiver.autoTune, digitalRecorders: receiver.digitalRecorders, analogRecorders: receiver.analogRecorders, dmrRecorders: receiver.dmrRecorders }).then(onUpdateReceiver).catch(() => setStatusMessage("Gain update failed")); }} /></label>
+                    {receiver.driver === "sdrplay" && <label>RF gain reduction (0–9)<input type="number" min="0" max="9" step="1" value={receiver.gainSettings?.RFGR ?? 4} onChange={(e) => { const gainSettings = { ...(receiver.gainSettings ?? {}), RFGR: Number(e.target.value) }; void updateReceiver(receiver.id, { label: receiver.label, driver: receiver.driver, serial: receiver.serial, centerFrequencyHz: receiver.centerFrequencyHz, sampleRateHz: receiver.sampleRateHz, gainDb: receiver.gainDb, gainSettings, ppm: receiver.ppm, enabled: receiver.enabled, role: receiver.role, soapyIndex: receiver.soapyIndex, autoTune: receiver.autoTune, digitalRecorders: receiver.digitalRecorders, analogRecorders: receiver.analogRecorders, dmrRecorders: receiver.dmrRecorders }).then(onUpdateReceiver).catch(() => setStatusMessage("RF gain update failed")); }} /></label>}
+                  </div>
+                  <p className="pane-desc">{receiver.driver === "sdrplay" ? "SDRplay uses gain reduction: lower IFGR/RFGR means more gain; higher values mean less gain. RFGR is a discrete LNA state, not dB." : ""} {telemetryFresh ? "Live telemetry is fresh." : "No fresh RF telemetry. Decoder mode reports levels only during calls; use radiod mode for continuous capture metrics."} A waterfall needs an FFT stream from the receiver.</p>
+                </div>;
+              })}
+            </div>
+          )}
           {/* SOURCES TAB */}
           {activeTab === "sources" && (
             <div className="tab-pane">
-              <h3>Capture Sources</h3>
-              <p className="pane-desc">Persisted settings and receivers drive decoder generation. Saves apply automatically — the capture reloads within a few seconds.</p>
+              <h3>Receivers</h3>
+              <p className="pane-desc">Each receiver covers a slice of spectrum and shares its recorder pools across the channels assigned to it.</p>
 
               {settings && (
                 <div className="config-section">
-                  <h4>Capture settings</h4>
+                  <h4>Capture engine</h4>
+                  <p className="pane-desc">This is usually set once. Receiver tuning and gain belong to the receiver cards below.</p>
                   <div className="form-grid">
                     <label>Capture mode<select value={settings.radioMode} onChange={(e) => setSettings({ ...settings, radioMode: e.target.value })}><option value="simulator">Simulator</option><option value="radiod">radiod (native)</option><option value="decoder">Decoder (Trunk Recorder)</option></select></label>
-                    <label>Site filter<input value={settings.siteFilter ?? ""} onChange={(e) => setSettings({ ...settings, siteFilter: e.target.value })} placeholder="Black River Falls" /></label>
                   </div>
                   <details className="fallback-details">
                     <summary>Advanced — fallback defaults for receivers that leave a value blank</summary>
@@ -583,6 +674,7 @@ export function ApplianceDrawer({
                           centerFrequencyHz: submodel?.centerFrequencyHz ?? 154_000_000,
                           sampleRateHz: submodel?.sampleRateHz ?? 2_400_000,
                           gainDb: submodel?.gainDb ?? 40,
+                          gainSettings: {},
                           ppm: submodel?.ppm ?? 0,
                           enabled: true,
                           role: "general",
@@ -613,6 +705,8 @@ export function ApplianceDrawer({
                   ))}
                 </div>
               )}
+
+              {statusMessage && <div className="status-message" role="status">{statusMessage}</div>}
 
               {showAddReceiver && (
                 <div className="config-box">
@@ -853,6 +947,7 @@ export function ApplianceDrawer({
                             centerFrequencyHz: r.centerFrequencyHz ?? 154_000_000,
                             sampleRateHz: r.sampleRateHz ?? 2_400_000,
                             gainDb: r.gainDb ?? 40,
+                            gainSettings: r.gainSettings,
                             ppm: r.ppm,
                             enabled: r.enabled ?? true,
                             role: r.role ?? "general",
@@ -914,7 +1009,15 @@ export function ApplianceDrawer({
                             />
                           </label>
                           <label>
-                            Gain (dB)
+                            Sample rate (MHz)
+                            <MhzField
+                              valueHz={receiverDraft.sampleRateHz}
+                              placeholder="2.4"
+                              onChange={(sampleRateHz) => setReceiverDraft({ ...receiverDraft, sampleRateHz })}
+                            />
+                          </label>
+                          <label>
+                            {r.driver === "sdrplay" ? "IF gain reduction (dB)" : "Gain (dB)"}
                             <input
                               type="number"
                               value={receiverDraft.gainDb}
@@ -923,7 +1026,24 @@ export function ApplianceDrawer({
                               }
                             />
                           </label>
+                          {r.driver === "sdrplay" && <label>
+                            RF gain reduction (0–9)
+                            <input type="number" min="0" max="9" value={receiverDraft.gainSettings?.RFGR ?? 4} onChange={(e) => setReceiverDraft({ ...receiverDraft, gainSettings: { ...(receiverDraft.gainSettings ?? {}), RFGR: Number(e.target.value) } })} />
+                            <small className="pane-desc">Lower IFGR/RFGR means more gain. RFGR is an SDRplay LNA state, not dB.</small>
+                          </label>}
                         </div>
+                        <details className="fallback-details">
+                          <summary>Advanced receiver controls</summary>
+                          <div className="form-grid">
+                            <label>Frequency correction (PPM)<input type="number" step="0.1" value={receiverDraft.ppm} onChange={(event) => setReceiverDraft({ ...receiverDraft, ppm: Number(event.target.value) })} /></label>
+                            <label>Digital recorders<input type="number" min="0" value={receiverDraft.digitalRecorders ?? 6} onChange={(event) => setReceiverDraft({ ...receiverDraft, digitalRecorders: Number(event.target.value) })} /></label>
+                            <label>DMR recorders<input type="number" min="0" value={receiverDraft.dmrRecorders ?? 4} onChange={(event) => setReceiverDraft({ ...receiverDraft, dmrRecorders: Number(event.target.value) })} /></label>
+                            <label>Analog recorders<input type="number" min="0" value={receiverDraft.analogRecorders ?? 4} onChange={(event) => setReceiverDraft({ ...receiverDraft, analogRecorders: Number(event.target.value) })} /></label>
+                            <label className="checkbox-label"><input type="checkbox" checked={receiverDraft.autoTune ?? false} onChange={(event) => setReceiverDraft({ ...receiverDraft, autoTune: event.target.checked })} /> Auto-tune PPM</label>
+                            <label className="checkbox-label"><input type="checkbox" checked={receiverDraft.enabled ?? true} onChange={(event) => setReceiverDraft({ ...receiverDraft, enabled: event.target.checked })} /> Receiver enabled</label>
+                          </div>
+                          <p className="pane-desc">Automatic gain control is a capture-engine fallback because Soapy drivers expose AGC differently. The gain values above are applied directly to this receiver.</p>
+                        </details>
                         <button
                           type="button"
                           className="primary-btn"
@@ -1125,35 +1245,20 @@ export function ApplianceDrawer({
           )}
 
           {/* SYSTEMS & PROFILES TAB */}
-          {activeTab === "systems" && (
+          {(activeTab === "trunked" || activeTab === "conventional") && (
             <div className="tab-pane">
-              <h3>Radio Systems & Decoder Profiles</h3>
-              <SitesEditor />
-              <div className="import-box">
-                <h4>Import RadioReference site CSV</h4>
-                <input type="file" accept=".csv" onChange={async (event) => {
-                  const file = event.target.files?.[0];
-                  const systemId = systems[0]?.id;
-                  if (!file || !systemId) return;
-                  try {
-                    const result = await importSites(file, systemId, true);
-                    setSystems(await getSystems());
-                    setStatusMessage(`Imported ${result.rows} sites`);
-                  } catch (error) {
-                    setStatusMessage(error instanceof Error ? error.message : "Site import failed");
-                  }
-                }} />
-              </div>
+              <h3>{systemView === "conventional" ? "Conventional channels" : "Trunked systems"}</h3>
+              <p className="pane-desc">{systemView === "conventional" ? "Each row is one fixed channel. Sites and talkgroups never apply here." : "Open a system to manage its control plan, sites, and talkgroups."}</p>
               <div className="systems-list">
-                {systems.map((sys) => (
+                {systems.filter((sys) => systemView === "trunked" ? (sys.protocol === "p25" || sys.protocol === "dmr") : !(sys.protocol === "p25" || sys.protocol === "dmr")).map((sys) => (
                   <div key={sys.id} className="config-box">
                     <div className="box-header">
                       <strong>{sys.name}</strong>
                       <span>Protocol: {sys.protocol}</span>
-                      {sys.protocol === "analog-fm" ? (
+                      {sys.protocol === "analog-fm" || sys.protocol === "conventional-p25" ? (
                         <>
                           <span>Freq: {formatFrequency(sys.frequencyHz)}</span>
-                          <span>PL Tone: {sys.tone ?? "CSQ"}</span>
+                          {sys.protocol === "analog-fm" && <span>PL Tone: {sys.tone ?? "CSQ"}</span>}
                         </>
                       ) : (
                         <>
@@ -1165,14 +1270,24 @@ export function ApplianceDrawer({
                       )}
                     </div>
                     <div className="btn-row">
-                      <button
+                      {(sys.protocol === "p25" || sys.protocol === "dmr") && <button
                         type="button"
-                        onClick={() =>
-                          setTalkgroupPanelSystem(talkgroupPanelSystem === sys.id ? null : sys.id)
-                        }
-                      >
-                        Talkgroups ({talkgroups.filter((tg) => tg.systemId === sys.id).length})
-                      </button>
+                        onClick={() => setTalkgroupPanelSystem(talkgroupPanelSystem === sys.id ? null : sys.id)}
+                      >Talkgroups ({talkgroups.filter((tg) => tg.systemId === sys.id).length})</button>}
+                      {systemView === "trunked" && <label className="import-inline">Import sites
+                        <input type="file" accept=".csv" onChange={async (event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            const result = await importSites(file, sys.id, true);
+                            setSystems(await getSystems());
+                            setStatusMessage(`Imported ${result.rows} sites into ${sys.name}`);
+                          } catch (error) {
+                            setStatusMessage(error instanceof Error ? error.message : "Site import failed");
+                          }
+                        }} />
+                      </label>}
+                      <label className="checkbox-label"><input type="checkbox" checked={sys.enabled !== false} onChange={async (e) => { try { const saved = await saveSystem({ ...sys, enabled: e.target.checked }); setSystems((items) => items.map((item) => item.id === saved.id ? saved : item)); } catch (error) { setStatusMessage(error instanceof Error ? error.message : "Channel update failed"); } }} /> Enabled</label>
                       <button type="button" onClick={() => setSystemDraft(sys)}>Edit</button>
                       <button type="button" className="danger-btn" onClick={async () => {
                         if (!window.confirm(`Delete system ${sys.name}?`)) return;
@@ -1185,11 +1300,25 @@ export function ApplianceDrawer({
                         }
                       }}>Delete</button>
                     </div>
+                    {systemView === "trunked" && (
+                      <details className="fallback-details">
+                        <summary>Sites and channel plan ({sys.sites?.length ?? 0})</summary>
+                        {(sys.sites ?? []).map((site, index) => (
+                          <div className="form-grid" key={site.id}>
+                            <label>Site name<input value={site.name} onChange={(event) => updateSystemSites(sys.id, (sites) => sites.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} /></label>
+                            <label>Control channels (MHz)<input value={site.controlChannelsHz.map(hzToMhz).join(", ")} placeholder="152.1125, 152.2175" onChange={(event) => updateSystemSites(sys.id, (sites) => sites.map((item, itemIndex) => itemIndex === index ? { ...item, controlChannelsHz: event.target.value.split(",").map(mhzToHz).filter((value) => value > 0) } : item))} /></label>
+                            <label>Voice channels (MHz)<input value={site.voiceChannelsHz.map(hzToMhz).join(", ")} placeholder="Voice channels, comma separated" onChange={(event) => updateSystemSites(sys.id, (sites) => sites.map((item, itemIndex) => itemIndex === index ? { ...item, voiceChannelsHz: event.target.value.split(",").map(mhzToHz).filter((value) => value > 0) } : item))} /></label>
+                            <button type="button" className="danger-btn" onClick={() => updateSystemSites(sys.id, (sites) => sites.filter((_, itemIndex) => itemIndex !== index))}>Remove site</button>
+                          </div>
+                        ))}
+                        <div className="btn-row">
+                          <button type="button" onClick={() => updateSystemSites(sys.id, (sites) => [...sites, { id: crypto.randomUUID(), name: "New site", controlChannelsHz: [], voiceChannelsHz: [] }])}>Add site</button>
+                          <button type="button" className="primary-btn" onClick={() => void saveSystemSites(sys.id)}>Save site plan</button>
+                        </div>
+                      </details>
+                    )}
                     {talkgroupPanelSystem === sys.id && (
                       <div className="r-edit-box">
-                        {(sys.protocol !== "p25" && sys.protocol !== "dmr") && (
-                          <p className="pane-desc">Conventional FM channels do not use talkgroups — Trunk Recorder assigns virtual IDs automatically. Talkgroups apply to P25 systems.</p>
-                        )}
                         {(sys.protocol === "p25" || sys.protocol === "dmr") && (
                           <>
                             {talkgroups.filter((tg) => tg.systemId === sys.id).length === 0 && (
@@ -1260,10 +1389,10 @@ export function ApplianceDrawer({
               </div>
 
               <div className="config-box">
-                <h4>Add / Update System</h4>
+                <div className="pane-header"><h4>{systemDraft.id === "00000000-0000-0000-0000-000000000000" ? "Add configuration" : "Edit configuration"}</h4><button type="button" onClick={() => setSystemDraft({ id: "00000000-0000-0000-0000-000000000000", name: systemView === "trunked" ? "New trunked system" : "New conventional channel", protocol: systemView === "trunked" ? "p25" : "analog-fm", controlChannelHz: systemView === "trunked" ? 851012500 : undefined, frequencyHz: systemView === "trunked" ? undefined : 154445000, bandwidthHz: systemView === "trunked" ? undefined : 12500, modulation: systemView === "trunked" ? undefined : "NFM", sites: [] })}>+ New {systemView === "trunked" ? "trunked system" : "channel"}</button></div>
                 <div className="form-grid">
                   <label>
-                    System Name
+                    {systemView === "conventional" ? "Channel name" : "System name"}
                     <input
                       type="text"
                       value={systemDraft.name}
@@ -1279,15 +1408,20 @@ export function ApplianceDrawer({
                         setSystemDraft((draft) => ({
                           ...draft,
                           protocol,
-                          modulation: protocol === "analog-fm" ? draft.modulation ?? "NFM" : draft.modulation,
+                          modulation: protocol === "analog-fm" ? "NFM" : protocol === "conventional-p25" || protocol === "conventional-dmr" ? "fsk4" : draft.modulation,
                           bandwidthHz: protocol === "analog-fm" ? draft.bandwidthHz ?? 12500 : draft.bandwidthHz,
                           controlChannelHz: protocol === "p25" || protocol === "dmr" ? draft.controlChannelHz ?? 851012500 : draft.controlChannelHz,
                         }));
                       }}
                     >
-                      <option value="p25">P25 Phase 1/2 Trunked</option>
-                      <option value="dmr">DMR Trunked (Tier III / MotoTRBO)</option>
-                      <option value="analog-fm">Analog FM Conventional</option>
+                      {systemView === "trunked" ? <>
+                        <option value="p25">P25 Phase 1/2</option>
+                        <option value="dmr">DMR Tier III / MotoTRBO</option>
+                      </> : <>
+                        <option value="analog-fm">Analog FM</option>
+                        <option value="conventional-p25">P25</option>
+                        <option value="conventional-dmr">DMR</option>
+                      </>}
                     </select>
                   </label>
                   {systemDraft.protocol === "p25" || systemDraft.protocol === "dmr" ? (
@@ -1328,6 +1462,26 @@ export function ApplianceDrawer({
                         </label>
                       )}
                     </>
+                  ) : systemDraft.protocol === "conventional-p25" ? (
+                    <>
+                      <label>Frequency (MHz)<MhzField valueHz={systemDraft.frequencyHz} onChange={(frequencyHz) => setSystemDraft({ ...systemDraft, frequencyHz })} /></label>
+                      <label>Modulation
+                        <select value={systemDraft.modulation ?? "fsk4"} onChange={(e) => setSystemDraft({ ...systemDraft, modulation: e.target.value })}>
+                          <option value="fsk4">C4FM</option>
+                          <option value="qpsk">CQPSK / simulcast</option>
+                        </select>
+                      </label>
+                      <label>Squelch (dB)<input type="number" value={systemDraft.squelchDb ?? -70} onChange={(e) => setSystemDraft({ ...systemDraft, squelchDb: Number(e.target.value) })} /></label>
+                      <p className="pane-desc">A dedicated digital recorder monitors this channel continuously. Encrypted audio is excluded from playback and AI.</p>
+                    </>
+                  ) : systemDraft.protocol === "conventional-dmr" ? (
+                    <>
+                      <label>Frequency (MHz)<MhzField valueHz={systemDraft.frequencyHz} onChange={(frequencyHz) => setSystemDraft({ ...systemDraft, frequencyHz })} /></label>
+                      <label>Color code (0–15)<input type="number" min="0" max="15" value={systemDraft.colorCode ?? 1} onChange={(e) => setSystemDraft({ ...systemDraft, colorCode: Number(e.target.value) })} /></label>
+                      <label>Time slot<select value={systemDraft.timeSlot ?? 1} onChange={(e) => setSystemDraft({ ...systemDraft, timeSlot: Number(e.target.value) })}><option value="1">1</option><option value="2">2</option></select></label>
+                      <label>Contact / talkgroup ID<input type="number" min="0" value={systemDraft.contactId ?? ""} onChange={(e) => setSystemDraft({ ...systemDraft, contactId: e.target.value ? Number(e.target.value) : undefined })} /></label>
+                      <p className="pane-desc">A dedicated digital recorder monitors this fixed DMR channel continuously.</p>
+                    </>
                   ) : (
                     <>
                       <label>Frequency (MHz)<MhzField valueHz={systemDraft.frequencyHz} placeholder="154.445" onChange={(frequencyHz) => setSystemDraft({ ...systemDraft, frequencyHz })} /></label>
@@ -1353,6 +1507,12 @@ export function ApplianceDrawer({
                       </label>
                       </>
                     )}
+                  {systemDraft.protocol !== "p25" && systemDraft.protocol !== "dmr" && <>
+                    <label>Counties<input value={(systemDraft.counties ?? []).join(", ")} placeholder="Jackson, Wood" onChange={(e) => setSystemDraft({ ...systemDraft, counties: e.target.value.split(",").map((v) => v.trim()).filter(Boolean) })} /></label>
+                    <label>Townships<input value={(systemDraft.townships ?? []).join(", ")} placeholder="Cleveland, Cary" onChange={(e) => setSystemDraft({ ...systemDraft, townships: e.target.value.split(",").map((v) => v.trim()).filter(Boolean) })} /></label>
+                    <label>Municipalities<input value={(systemDraft.municipalities ?? []).join(", ")} placeholder="Pittsville" onChange={(e) => setSystemDraft({ ...systemDraft, municipalities: e.target.value.split(",").map((v) => v.trim()).filter(Boolean) })} /></label>
+                    <label className="full-width">Local context<textarea rows={2} value={systemDraft.localContext ?? ""} placeholder="Coverage area, common intersections, agency terms" onChange={(e) => setSystemDraft({ ...systemDraft, localContext: e.target.value || undefined })} /></label>
+                  </>}
                   <label>
                     Assigned receiver
                     <select
@@ -1371,9 +1531,12 @@ export function ApplianceDrawer({
                     </select>
                   </label>
                 </div>
-                <button type="button" className="primary-btn" onClick={handleSaveSystem}>
-                  Save System Profile
-                </button>
+                <div className="btn-row">
+                  <button type="button" className="primary-btn" onClick={handleSaveSystem}>
+                    Save {systemDraft.protocol === "p25" || systemDraft.protocol === "dmr" ? "trunked system" : "conventional channel"}
+                  </button>
+                  {systemView === "conventional" && <button type="button" onClick={handleSaveAndAddChannel}>Save & add another</button>}
+                </div>
               </div>
             </div>
           )}
@@ -1410,7 +1573,19 @@ export function ApplianceDrawer({
                       <option value="privacy-max">Privacy max</option>
                     </select>
                   </label>
-                  <label>Transcribe provider<input value={settings.transcribeProvider ?? "openai-compatible"} onChange={(e) => setSettings({ ...settings, transcribeProvider: e.target.value })} /></label>
+                  <label>Transcription provider
+                    <select value={settings.transcribeProvider ?? "openai-compatible"} onChange={(e) => {
+                      const provider = e.target.value;
+                      const defaults: Record<string, Partial<AppSettings>> = {
+                        "openai-compatible": { transcribeUrl: "http://127.0.0.1:8000/v1/audio/transcriptions", transcribeModel: "whisper-1" },
+                        "openai": { transcribeUrl: "https://api.openai.com/v1/audio/transcriptions", transcribeModel: "gpt-4o-mini-transcribe" },
+                        "groq": { transcribeUrl: "https://api.groq.com/openai/v1/audio/transcriptions", transcribeModel: "whisper-large-v3-turbo" },
+                      };
+                      setSettings({ ...settings, transcribeProvider: provider, ...(defaults[provider] ?? {}) });
+                    }}>
+                      <option value="openai-compatible">Local / OpenAI-compatible</option><option value="openai">OpenAI</option><option value="groq">Groq</option>
+                    </select>
+                  </label>
                   <label>Transcribe URL<input value={settings.transcribeUrl} onChange={(e) => setSettings({ ...settings, transcribeUrl: e.target.value })} /></label>
                   <label>Transcribe API key<input type="password" value={settings.transcribeApiKey ?? ""} onChange={(e) => setSettings({ ...settings, transcribeApiKey: e.target.value })} /></label>
                   <IntegrationModelField
@@ -1432,7 +1607,19 @@ export function ApplianceDrawer({
                   />
                   <p className="pane-desc">ASR profile (auto): {settings.aiProfile}</p>
                   <label className="checkbox-label"><input type="checkbox" checked={settings.vadEnabled} onChange={(e) => setSettings({ ...settings, vadEnabled: e.target.checked })} /> VAD enabled</label>
-                  <label>Summary provider<input value={settings.summaryProvider ?? "ollama"} onChange={(e) => setSettings({ ...settings, summaryProvider: e.target.value })} /></label>
+                  <label>Summary provider
+                    <select value={settings.summaryProvider ?? "ollama"} onChange={(e) => {
+                      const provider = e.target.value;
+                      const defaults: Record<string, Partial<AppSettings>> = {
+                        ollama: { summaryUrl: "http://127.0.0.1:11434/api/generate", summaryModel: "llama3.2:3b" },
+                        "openai-compatible": { summaryUrl: "https://api.openai.com/v1/chat/completions", summaryModel: "gpt-4o-mini" },
+                        anthropic: { summaryUrl: "https://api.anthropic.com/v1/messages", summaryModel: "claude-sonnet-4-20250514" },
+                      };
+                      setSettings({ ...settings, summaryProvider: provider, ...(defaults[provider] ?? {}) });
+                    }}>
+                      <option value="ollama">Local Ollama</option><option value="openai-compatible">OpenAI-compatible / OpenRouter</option><option value="anthropic">Anthropic</option>
+                    </select>
+                  </label>
                   <label>Summary URL<input value={settings.summaryUrl ?? ""} onChange={(e) => setSettings({ ...settings, summaryUrl: e.target.value })} /></label>
                   <label>Summary API key<input type="password" value={settings.summaryApiKey ?? ""} onChange={(e) => setSettings({ ...settings, summaryApiKey: e.target.value })} /></label>
                   <IntegrationModelField
@@ -1447,6 +1634,15 @@ export function ApplianceDrawer({
                     onChange={(summaryModel) => setSettings({ ...settings, summaryModel })}
                   />
                   <label>Summary refresh (min)<input type="number" value={settings.summaryRefreshMinutes ?? 15} onChange={(e) => setSettings({ ...settings, summaryRefreshMinutes: Number(e.target.value) })} /></label>
+                  <label>Summary lookback
+                    <select value={settings.summaryLookbackHours ?? 4} onChange={(e) => setSettings({ ...settings, summaryLookbackHours: Number(e.target.value) })}>
+                      <option value="1">Last hour</option><option value="4">Last 4 hours</option><option value="12">Last 12 hours</option><option value="24">Last 24 hours</option>
+                    </select>
+                  </label>
+                  <label className="full-width">Transcription system prompt<textarea rows={4} value={settings.transcriptionSystemPrompt ?? ""} onChange={(e) => setSettings({ ...settings, transcriptionSystemPrompt: e.target.value })} /></label>
+                  <label className="full-width">Summary system prompt<textarea rows={4} value={settings.summarySystemPrompt ?? ""} onChange={(e) => setSettings({ ...settings, summarySystemPrompt: e.target.value })} /></label>
+                  <label className="full-width">Radio vocabulary<textarea rows={3} placeholder="One term per line: call signs, unit names, local places" value={(settings.radioVocabulary ?? []).join("\n")} onChange={(e) => setSettings({ ...settings, radioVocabulary: e.target.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean) })} /></label>
+                  <EnrichmentSettings value={settings.aiTasks ?? {}} onChange={aiTasks => setSettings({ ...settings, aiTasks })} />
                 </div>
                 <div className="btn-row">
                   <button type="button" onClick={async () => { try { await testTranscribeIntegration(); setStatusMessage("Transcription provider reachable"); } catch (error) { setStatusMessage(error instanceof Error ? error.message : "Transcription test failed"); } }}>Test transcription</button>
@@ -1454,7 +1650,7 @@ export function ApplianceDrawer({
                 </div>
               </div>
               <div className="config-section">
-                <h4>Geocoder & Discord</h4>
+                <h4>Geocoding</h4>
                 <div className="form-grid">
                   <label>Geocoder provider
                     <select value={settings.geocoderProvider ?? "nominatim"} onChange={(e) => setSettings({ ...settings, geocoderProvider: e.target.value })}>
@@ -1466,10 +1662,17 @@ export function ApplianceDrawer({
                   </label>
                   <label>Geocoder URL<input value={settings.geocoderUrl ?? ""} onChange={(e) => setSettings({ ...settings, geocoderUrl: e.target.value })} /></label>
                   <label>Geocoder API key<input type="password" value={settings.geocoderApiKey ?? ""} onChange={(e) => setSettings({ ...settings, geocoderApiKey: e.target.value })} /></label>
-                  <label>Discord webhook URL<input value={settings.discordWebhookUrl ?? ""} onChange={(e) => setSettings({ ...settings, discordWebhookUrl: e.target.value })} /></label>
                   <label className="checkbox-label"><input type="checkbox" checked={settings.compatIngestEnabled ?? false} onChange={(e) => setSettings({ ...settings, compatIngestEnabled: e.target.checked })} /> Rdio-scanner compatible ingest (`/api/call-upload`)</label>
                 </div>
                 <button type="button" onClick={async () => { try { await testGeocoderIntegration(); setStatusMessage("Geocoder test OK"); } catch (error) { setStatusMessage(error instanceof Error ? error.message : "Geocoder test failed"); } }}>Test geocoder</button>
+              </div>
+              <button type="button" className="primary-btn" onClick={handleSaveSettings}>Save integrations</button>
+            </div>
+          )}
+
+          {activeTab === "notifications" && settings && (<div className="tab-pane"><h3>Notifications</h3><p className="pane-desc">Tests send a message using the saved webhook. Save changes before testing.</p><div className="form-grid">
+                  <label>Discord webhook URL<input value={settings.discordWebhookUrl ?? ""} onChange={(e) => setSettings({ ...settings, discordWebhookUrl: e.target.value })} /></label>
+</div>
                 <button type="button" onClick={async () => { try { await testDiscordWebhook(); setStatusMessage("Discord test delivered"); } catch (error) { setStatusMessage(error instanceof Error ? error.message : "Discord test failed"); } }}>Test Discord webhook</button>
                 <h4>Keyword alert rules</h4>
                 {(settings.discordKeywordRules ?? []).map((rule, index) => (
@@ -1477,6 +1680,7 @@ export function ApplianceDrawer({
                     <label>Keyword<input value={rule.keyword} onChange={(e) => setSettings({ ...settings, discordKeywordRules: (settings.discordKeywordRules ?? []).map((item, i) => i === index ? { ...item, keyword: e.target.value } : item) })} /></label>
                     <label>Override webhook<input value={rule.webhookUrl ?? ""} onChange={(e) => setSettings({ ...settings, discordKeywordRules: (settings.discordKeywordRules ?? []).map((item, i) => i === index ? { ...item, webhookUrl: e.target.value } : item) })} /></label>
                     <label className="checkbox-label"><input type="checkbox" checked={rule.enabled ?? true} onChange={(e) => setSettings({ ...settings, discordKeywordRules: (settings.discordKeywordRules ?? []).map((item, i) => i === index ? { ...item, enabled: e.target.checked } : item) })} /> Enabled</label>
+                    <button type="button" aria-label={`Remove keyword rule ${index + 1}`} onClick={() => setSettings({ ...settings, discordKeywordRules: (settings.discordKeywordRules ?? []).filter((_, i) => i !== index) })}>Remove rule</button>
                   </div>
                 ))}
                 <button type="button" onClick={() => setSettings({ ...settings, discordKeywordRules: [...(settings.discordKeywordRules ?? []), { id: crypto.randomUUID(), keyword: "", webhookUrl: "", enabled: true } as DiscordKeywordRule] })}>Add keyword rule</button>
@@ -1486,10 +1690,12 @@ export function ApplianceDrawer({
                     <label>Talkgroup ID<input type="number" value={rule.talkgroupId} onChange={(e) => setSettings({ ...settings, discordTalkgroupRules: (settings.discordTalkgroupRules ?? []).map((item, i) => i === index ? { ...item, talkgroupId: Number(e.target.value) } : item) })} /></label>
                     <label>Webhook URL<input value={rule.webhookUrl ?? ""} onChange={(e) => setSettings({ ...settings, discordTalkgroupRules: (settings.discordTalkgroupRules ?? []).map((item, i) => i === index ? { ...item, webhookUrl: e.target.value } : item) })} /></label>
                     <label className="checkbox-label"><input type="checkbox" checked={rule.enabled ?? true} onChange={(e) => setSettings({ ...settings, discordTalkgroupRules: (settings.discordTalkgroupRules ?? []).map((item, i) => i === index ? { ...item, enabled: e.target.checked } : item) })} /> Enabled</label>
+                    <button type="button" aria-label={`Remove talkgroup route ${index + 1}`} onClick={() => setSettings({ ...settings, discordTalkgroupRules: (settings.discordTalkgroupRules ?? []).filter((_, i) => i !== index) })}>Remove route</button>
                   </div>
                 ))}
                 <button type="button" onClick={() => setSettings({ ...settings, discordTalkgroupRules: [...(settings.discordTalkgroupRules ?? []), { id: crypto.randomUUID(), talkgroupId: 0, webhookUrl: "", enabled: true } as DiscordTalkgroupRule] })}>Add talkgroup route</button>
-              </div>
+<button type="button" className="primary-btn" onClick={handleSaveSettings}>Save notifications</button></div>)}
+          {activeTab === "retention" && settings && (<div className="tab-pane"><h3>Recording retention</h3><p className="pane-desc">Expired records are removed automatically. Set how many days to keep each type.</p>
               <div className="config-section">
                 <h4>Retention (days)</h4>
                 <div className="form-grid">
@@ -1498,10 +1704,7 @@ export function ApplianceDrawer({
                   <label>Metadata<input type="number" value={settings.metadataRetentionDays ?? 365} onChange={(e) => setSettings({ ...settings, metadataRetentionDays: Number(e.target.value) })} /></label>
                 </div>
               </div>
-              <button type="button" className="primary-btn" onClick={handleSaveSettings}>Save integrations</button>
-            </div>
-          )}
-
+<button type="button" className="primary-btn" onClick={handleSaveSettings}>Save retention</button></div>)}
           {activeTab === "policy" && (
             <div className="tab-pane">
               <h3>Public Feed Policy</h3>
@@ -1521,6 +1724,7 @@ export function ApplianceDrawer({
             <div className="tab-pane">
               <h3>Runtime Diagnostics</h3>
               {runtime && <div className="config-box"><span>Receivers: {runtime.receiverCount}</span><span>Decoder: {runtime.decoderConnected ? "connected" : "offline"}</span><span>AI: {runtime.aiWorkerStatus ?? "unknown"}</span><span>Queue backlog: {runtime.queueBacklog ?? 0}</span><span>Storage: {runtime.storagePath ?? "unknown"}</span><span>Persistence: {runtime.persistenceConnected ? "connected" : "file fallback"}</span><span>Active scan list: {runtime.activeScanList ?? "none"}</span></div>}
+              <EnrichmentActions />
               {diagnostics && <div className="config-box"><span>Capture: {diagnostics.capture.state} — {diagnostics.capture.detail}</span><span>Decoder: {diagnostics.decoder.state} — {diagnostics.decoder.detail}</span><span>Recording: {diagnostics.recording.state}</span><span>Ingestion: {diagnostics.ingestion.state}</span><span>AI: {diagnostics.ai.state} — {diagnostics.ai.detail}</span><span>Image: {diagnostics.imageVersion ?? "unknown"}</span><span>Config hash: {diagnostics.configHash ?? "—"}</span><span>Process ID: {diagnostics.processId ?? "—"}</span><span>Decoder heartbeat age: {diagnostics.decoderHeartbeatAgeSeconds ?? "—"}s</span><span>Control lock age: {diagnostics.decoderControlLockAgeSeconds ?? "—"}s</span>{diagnostics.failureReason && <span>Failure: {diagnostics.failureReason}</span>}{diagnostics.aiFailureReason && <span>AI failure: {diagnostics.aiFailureReason}</span>}{diagnostics.simulated && <span className="live-tag">SIMULATED</span>}</div>}
               <div className="btn-row">
                 <button

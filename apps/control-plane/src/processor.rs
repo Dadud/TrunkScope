@@ -25,7 +25,13 @@ impl ProcessingConfig {
             .read()
             .expect("settings lock poisoned")
             .clone();
-        if !settings.ai_enabled {
+        // Transcription is an independent pipeline. It may run when the
+        // operations-summary feature is disabled, as long as an ASR endpoint
+        // and model are configured.
+        if !settings.ai_enabled
+            || settings.transcribe_url.trim().is_empty()
+            || settings.transcribe_model.trim().is_empty()
+        {
             return None;
         }
         Some(Self {
@@ -37,15 +43,11 @@ impl ProcessingConfig {
 }
 
 pub fn spawn(state: Arc<AppState>) {
-    let ai_enabled = state
-        .settings
-        .read()
-        .expect("settings lock poisoned")
-        .ai_enabled;
+    let transcription_enabled = ProcessingConfig::from_state(&state).is_some();
     *state
         .ai_worker_status
         .write()
-        .expect("AI status lock poisoned") = if ai_enabled { "idle" } else { "disabled" }.into();
+        .expect("AI status lock poisoned") = if transcription_enabled { "idle" } else { "disabled" }.into();
     let receiver = state
         .processing_receiver
         .lock()
@@ -126,42 +128,40 @@ async fn process_with_retry(
         sleep(wait).await;
     }
 
-    let settings = state
+    let mut settings = state
         .settings
         .read()
         .expect("settings lock poisoned")
         .clone();
+    if let Some(profile) = state
+        .systems
+        .read()
+        .expect("systems lock poisoned")
+        .iter()
+        .find(|profile| profile.id == call.system_id)
+    {
+        let mut context = Vec::new();
+        if !profile.counties.is_empty() { context.push(format!("counties: {}", profile.counties.join(", "))); }
+        if !profile.townships.is_empty() { context.push(format!("townships: {}", profile.townships.join(", "))); }
+        if !profile.municipalities.is_empty() { context.push(format!("municipalities: {}", profile.municipalities.join(", "))); }
+        if let Some(notes) = profile.local_context.as_deref().filter(|value| !value.trim().is_empty()) { context.push(format!("local context: {notes}")); }
+        if !context.is_empty() {
+            settings.transcription_system_prompt.push_str("\nLocal radio context: ");
+            settings.transcription_system_prompt.push_str(&context.join("; "));
+        }
+    }
     let mut delay = Duration::from_secs(1);
     for attempt in 1..=5 {
         match providers::transcribe(client, &settings, &path).await {
             Ok(transcript) => {
-                let two_tone = providers::detect_two_tone_dispatch(&transcript);
-                let mut location_hint = providers::extract_location_hint(&transcript);
-                if location_hint.is_none() {
-                    location_hint =
-                        providers::llm_location_hint(client, &settings, &transcript).await;
-                }
-                let summary = if transcript.trim().chars().count() >= 8
-                    && (!two_tone || transcript.trim().chars().count() >= 16)
-                {
-                    let prompt = format!(
-                        "Summarize this radio transmission in one factual sentence. Do not invent details. Transcript: {transcript}"
-                    );
-                    providers::summarize(client, &settings, &transcript, &prompt)
-                        .await
-                        .ok()
-                } else {
-                    None
-                };
-                let discord_summary = summary.clone();
-                state.enrich_call(call.id, transcript, summary);
+                let location_hint = providers::extract_location_hint(&transcript);
+                state.enrich_call(call.id, transcript, None);
+                // Scheduled enrichment owns task completion. Transcription does
+                // not establish a category, extract units, or normalize an address.
                 if let Some(hint) = location_hint {
                     if let Some(location) = providers::geocode(client, &settings, &hint).await {
                         state.set_call_location(call.id, location);
                     }
-                }
-                if let Some(summary_text) = discord_summary.as_deref() {
-                    notify_discord(client, state, &call, summary_text).await;
                 }
                 return;
             }
@@ -176,101 +176,6 @@ async fn process_with_retry(
                 warn!(%attempt, error = %cause, "call processing exhausted retries");
             }
         }
-    }
-}
-
-async fn notify_discord(client: &Client, state: &AppState, call: &Call, summary: &str) {
-    let (webhook, keyword_rules, talkgroup_rules) = {
-        let settings = state.settings.read().expect("settings lock poisoned");
-        (
-            settings.effective_discord_webhook_url(),
-            settings.discord_keyword_rules.clone(),
-            settings.discord_talkgroup_rules.clone(),
-        )
-    };
-    let Some(default_webhook) = webhook else {
-        return;
-    };
-    if call.encryption != EncryptionState::Clear {
-        return;
-    }
-    let talkgroup_webhook = talkgroup_rules.iter().find(|rule| {
-        rule.enabled
-            && rule.talkgroup_id == call.talkgroup_id
-            && !rule.webhook_url.trim().is_empty()
-    });
-    let haystack = format!(
-        "{} {} {} {}",
-        call.talkgroup_label,
-        call.category,
-        summary,
-        call.transcript.as_deref().unwrap_or("")
-    )
-    .to_lowercase();
-    let matched_rule = keyword_rules
-        .iter()
-        .find(|rule| rule.enabled && haystack.contains(&rule.keyword.to_lowercase()));
-    let target_webhook = talkgroup_webhook
-        .map(|rule| rule.webhook_url.clone())
-        .or_else(|| {
-            matched_rule.and_then(|rule| {
-                let trimmed = rule.webhook_url.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(rule.webhook_url.clone())
-                }
-            })
-        })
-        .unwrap_or(default_webhook);
-    let map_link = call
-        .location
-        .as_ref()
-        .map(|loc| {
-            format!(
-                "https://www.openstreetmap.org/?mlat={}&mlon={}#map=16/{}/{}",
-                loc.latitude, loc.longitude, loc.latitude, loc.longitude
-            )
-        })
-        .unwrap_or_default();
-    let audio_link = call
-        .audio
-        .as_ref()
-        .map(|_| format!("/api/v1/calls/{}/audio", call.id))
-        .unwrap_or_default();
-    let duration_secs = call
-        .ended_at
-        .map(|ended| (ended - call.started_at).num_seconds().max(0))
-        .unwrap_or(0);
-    let mut embed = serde_json::json!({
-        "title": format!("{} · {}", call.talkgroup_label, call.category),
-        "description": summary,
-        "color": 3447003,
-        "fields": [
-            { "name": "System", "value": call.system_name, "inline": true },
-            { "name": "Talkgroup", "value": call.talkgroup_label, "inline": true },
-            { "name": "Duration", "value": format!("{}s", duration_secs), "inline": true },
-        ]
-    });
-    if !map_link.is_empty() {
-        embed["fields"]
-            .as_array_mut()
-            .expect("embed fields")
-            .push(serde_json::json!({ "name": "Map", "value": map_link, "inline": false }));
-    }
-    if !audio_link.is_empty() {
-        embed["fields"]
-            .as_array_mut()
-            .expect("embed fields")
-            .push(serde_json::json!({ "name": "Audio", "value": audio_link, "inline": false }));
-    }
-    let payload = serde_json::json!({
-        "username": "TrunkScope",
-        "embeds": [embed],
-        "allowed_mentions": { "parse": [] }
-    });
-    if let Err(error) = client.post(target_webhook).json(&payload).send().await {
-        warn!(error = %error, call_id = %call.id, "discord notification failed");
     }
 }
 

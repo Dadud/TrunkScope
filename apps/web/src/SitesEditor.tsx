@@ -8,7 +8,7 @@ export function SitesEditor() {
   const [profiles, setProfiles] = useState<SystemProfile[]>([]);
   const [selected, setSelected] = useState<SystemProfile>();
   const [status, setStatus] = useState("");
-  useEffect(() => { getSystems().then((items) => { setProfiles(items); setSelected(items.find((item) => item.protocol.startsWith("p25")) ?? items[0]); }).catch(() => setStatus("Systems unavailable")); }, []);
+  useEffect(() => { getSystems().then((items) => { const trunked = items.filter((item) => item.protocol === "p25" || item.protocol === "dmr"); setProfiles(trunked); setSelected(trunked.find((item) => item.protocol === "p25") ?? trunked[0]); }).catch(() => setStatus("Systems unavailable")); }, []);
   const updateSites = (sites: Site[]) => setSelected((current) => current ? { ...current, sites } : current);
   const add = () => updateSites([...(selected?.sites ?? []), { id: crypto.randomUUID(), name: "New site", controlChannelsHz: [], voiceChannelsHz: [], latitude: undefined, longitude: undefined }]);
   const save = async () => { if (!selected) return; try { const saved = await saveSystem(selected); setSelected(saved); setProfiles((items) => items.map((item) => item.id === saved.id ? saved : item)); setStatus("Sites saved; decoder configuration regenerated"); } catch (error) { setStatus(error instanceof Error ? error.message : "Site save failed"); } };

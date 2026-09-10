@@ -22,9 +22,15 @@ services:
     volumes:
       - ${TRUNKSCOPE_APPDATA:-trunkscope-data}:/var/lib/trunkscope
       - ${TRUNKSCOPE_SDRPLAY_RUNTIME:-/dev/null}:/opt/sdrplay:ro
+      # SDRplay's vendor API discovers USB devices through libudev/sysfs.
+      # usbfs alone makes lsusb work but leaves the API reporting no RSP.
+      - /run/udev:/run/udev:ro
+      - /sys:/sys:ro
     devices:
       - ${TRUNKSCOPE_USB_DEVICES:-/dev/bus/usb:/dev/bus/usb}
-    ipc: host
+    # SDRplay service and decoder share this container's private IPC namespace.
+    # Host IPC can collide with a leftover host SDRplay service.
+    ipc: private
     shm_size: 256m
     ulimits:
       memlock:

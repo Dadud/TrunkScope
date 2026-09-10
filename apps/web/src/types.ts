@@ -9,6 +9,7 @@ export interface Receiver {
   centerFrequencyHz?: number;
   sampleRateHz?: number;
   gainDb?: number;
+  gainSettings?: Record<string, number>;
   ppm: number;
   enabled?: boolean;
   role?: "general" | "p25" | "analog";
@@ -52,6 +53,7 @@ export interface Call {
   summary?: string;
   location?: { label: string; latitude: number; longitude: number; confidence: number };
   audio?: { objectKey: string; contentType: string; durationMs: number };
+  enrichment?: Record<string, unknown>;
 }
 
 export interface PublicationPolicy {

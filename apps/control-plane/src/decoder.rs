@@ -344,6 +344,14 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
         return None;
     }
     let short_name = source.short_name.value();
+    let conventional_profile = state
+        .systems
+        .read()
+        .ok()
+        .and_then(|systems| systems.iter().find(|profile| {
+            profile.frequency_hz == Some(frequency_hz)
+                && matches!(profile.protocol.as_str(), "analog-fm" | "conventional-p25" | "conventional-dmr")
+        }).cloned());
     // TR status events carry no DMR discriminator, so match the sanitized
     // shortName back to a configured DMR system for honest categorization.
     let is_dmr_system = state
@@ -374,7 +382,9 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
     let ended_at = ended.then(|| parse_epoch(&source.stop_time.value()).unwrap_or_else(Utc::now));
     let encrypted = source.encrypted.value();
     let talkgrouptag = source.talkgrouptag.value();
-    let talkgroup_label = if talkgrouptag.is_empty() {
+    let talkgroup_label = if let Some(profile) = conventional_profile.as_ref() {
+        format!("{:.4} MHz · {}", frequency_hz as f64 / 1_000_000.0, profile.name)
+    } else if talkgrouptag.is_empty() {
         format!("Talkgroup {talkgroup_id}")
     } else {
         talkgrouptag
@@ -463,6 +473,7 @@ fn convert_call(state: &AppState, source: &DecoderCall, ended: bool) -> Option<C
                     .map(|end| (end - started_at).num_milliseconds().max(0) as u64)
                     .unwrap_or(0),
             }),
+        enrichment: serde_json::json!({}),
     })
 }
 
@@ -585,6 +596,8 @@ mod tests {
             .push(crate::state::SystemProfile {
                 id: Uuid::new_v4(),
                 name: "County DMR".into(),
+                enabled: true,
+                color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
                 protocol: "dmr".into(),
                 control_channel_hz: Some(452_000_000),
                 control_channels_hz: vec![],
@@ -649,6 +662,8 @@ mod tests {
             .push(crate::state::SystemProfile {
                 id: Uuid::new_v4(),
                 name: "FM".into(),
+                enabled: true,
+                color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
                 protocol: "analog-fm".into(),
                 control_channel_hz: None,
                 control_channels_hz: Vec::new(),
@@ -681,6 +696,8 @@ mod tests {
             .push(crate::state::SystemProfile {
                 id: Uuid::new_v4(),
                 name: "DCS FM".into(),
+                enabled: true,
+                color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
                 protocol: "analog-fm".into(),
                 control_channel_hz: None,
                 control_channels_hz: Vec::new(),

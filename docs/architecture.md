@@ -42,7 +42,10 @@ RF → Trunk Recorder → WAV + JSON sidecar
 Control plane:
   ingest → validate path → archive call (SQLite + memory ring)
         → queue AI worker (10s dwell for adjacent segments)
-        → transcribe → summarize → geocode hint → Discord notify
+        → transcribe → optional pattern-based geocode hint
+
+Operations Brief:
+  windowed calls + transcripts → AI-written narrative summary
 ```
 
 ### Conversation sessions

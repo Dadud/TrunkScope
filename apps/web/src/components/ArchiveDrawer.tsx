@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import type { Call } from "../types";
 import { formatElapsed, formatFrequency } from "../format";
-import { callAudioUrl, purgeCalls, undoPurgeCalls } from "../api";
+import { callAudioUrl, purgeCalls, undoPurgeCalls, retryCallEnrichment } from "../api";
 
 interface ArchiveDrawerProps {
   isOpen: boolean;
@@ -16,7 +16,14 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [purgeHours, setPurgeHours] = useState(24);
   const [purgeMessage, setPurgeMessage] = useState("");
+  const [deleteAudio, setDeleteAudio] = useState(true);
   const [undoAvailable, setUndoAvailable] = useState(false);
+  const [undoIds, setUndoIds] = useState<string[]>([]);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removedIds, setRemovedIds] = useState<string[]>([]);
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const [retryMessage, setRetryMessage] = useState("");
+  const [purging, setPurging] = useState(false);
 
   const categories = useMemo(() => {
     return Array.from(new Set(calls.map((c) => c.category))).sort();
@@ -24,12 +31,13 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
 
   const filteredCalls = useMemo(() => {
     return calls.filter((c) => {
+      if (removedIds.includes(c.id)) return false;
       const matchesCat = selectedCategory === "all" || c.category === selectedCategory;
-      const text = `${c.talkgroupLabel} ${c.talkgroupId} ${c.systemName} ${c.transcript ?? ""} ${c.location?.label ?? ""}`.toLowerCase();
-      const matchesSearch = text.includes(search.toLowerCase());
+      const text = `${c.talkgroupLabel} ${c.talkgroupId} ${c.systemName} ${c.frequencyHz} ${formatFrequency(c.frequencyHz)} ${c.transcript ?? ""} ${c.location?.label ?? ""}`.toLowerCase();
+      const matchesSearch = text.includes(search.trim().toLowerCase());
       return matchesCat && matchesSearch;
     });
-  }, [calls, selectedCategory, search]);
+  }, [calls, selectedCategory, search, removedIds]);
 
   if (!isOpen) return null;
 
@@ -50,7 +58,8 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
           <input
             type="text"
             className="drawer-search"
-            placeholder="Search transcripts, talkgroups, locations…"
+            aria-label="Search recordings"
+            placeholder="Search channels, frequencies, transcripts, locations…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -73,7 +82,7 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
         </div>
 
         <div className="archive-purge-panel">
-          <h4>Admin purge</h4>
+          <h4>Remove recordings</h4>
           <label>
             Remove calls from last
             <input type="number" min={1} max={168} value={purgeHours} onChange={(e) => setPurgeHours(Number(e.target.value))} />
@@ -83,21 +92,28 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
             <button
               type="button"
               className="danger-btn"
+              disabled={purging || !Number.isInteger(purgeHours) || purgeHours < 1 || purgeHours > 168}
               onClick={async () => {
-                if (!window.confirm(`Remove calls from the last ${purgeHours} hours?`)) return;
+                const ids = filteredCalls.filter((call) => call.state !== "active" && new Date(call.startedAt).getTime() >= Date.now() - purgeHours * 3600000).map((call) => call.id);
+                if (ids.length === 0) { setPurgeMessage("No completed recordings match the filters and time window."); return; }
+                if (!window.confirm(`Delete ${ids.length} matching recordings${deleteAudio ? " and their audio" : " (metadata only)"} from the last ${purgeHours} hours?`)) return;
+                setPurging(true);
                 try {
                   const result = await purgeCalls({
-                    hours: purgeHours,
-                    category: selectedCategory === "all" ? undefined : selectedCategory,
+                    callIds: ids,
+                    deleteAudio,
                   });
-                  setPurgeMessage(`Removed ${result.removed} calls`);
-                  setUndoAvailable(result.removed > 0);
+                  setPurgeMessage(`Deleted ${result.removed} call${result.removed === 1 ? "" : "s"}${deleteAudio ? " and audio" : ""}`);
+                  setUndoAvailable(result.removed > 0 && !deleteAudio);
+                  setUndoIds(result.removed > 0 && !deleteAudio ? ids : []);
+                  setRemovedIds((previous) => [...new Set([...previous, ...ids])]);
+                  if (playingId && ids.includes(playingId)) setPlayingId(null);
                 } catch (error) {
                   setPurgeMessage(error instanceof Error ? error.message : "Purge failed");
-                }
+                } finally { setPurging(false); }
               }}
             >
-              Purge matching calls
+              {purging ? "Removing…" : "Purge matching calls"}
             </button>
             {undoAvailable && (
               <button
@@ -107,6 +123,8 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
                     const result = await undoPurgeCalls();
                     setPurgeMessage(`Restored ${result.removed} calls`);
                     setUndoAvailable(false);
+                    setRemovedIds((previous) => previous.filter((id) => !undoIds.includes(id)));
+                    setUndoIds([]);
                   } catch (error) {
                     setPurgeMessage(error instanceof Error ? error.message : "Undo failed");
                   }
@@ -116,10 +134,13 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
               </button>
             )}
           </div>
+          <label className="checkbox-label"><input type="checkbox" checked={deleteAudio} onChange={(event) => setDeleteAudio(event.target.checked)} /> Delete audio files too</label>
           {purgeMessage && <span>{purgeMessage}</span>}
         </div>
 
         <div className="archive-scroll-list">
+          {filteredCalls.length === 0 && <p>No recordings match your filters.</p>}
+          {retryMessage && <p role="status">{retryMessage}</p>}
           {filteredCalls.map((call) => {
             const hasAudio = Boolean(call.audio) && call.encryption === "clear";
             const isPlaying = playingId === call.id;
@@ -134,6 +155,14 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
                 }}
                 role="button"
                 tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelectCall(call);
+                    if (call.location) onClose();
+                  }
+                }}
               >
                 <div className="card-top">
                   <span className="time">
@@ -152,14 +181,69 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
 
                 <div className="card-mid">
                   <p className="transcript">
-                    {call.summary ?? call.transcript ?? "No transcript recorded"}
+                    {call.transcript ?? "No transcript recorded"}
                   </p>
                 </div>
+                {call.enrichment && Object.keys(call.enrichment).length > 0 && (
+                  <details className="ai-enrichment-details" onClick={(event) => event.stopPropagation()}>
+                    <summary>AI enrichment ({Object.keys(call.enrichment).length} tasks)</summary>
+                    <div className="ai-enrichment-list">
+                      {Object.entries(call.enrichment).map(([task, value]) => {
+                        const item = value && typeof value === "object" ? value as Record<string, unknown> : {};
+                        const canRetry = ["unit-extraction", "event-tagging", "address-normalization", "correlation", "map-placement"].includes(task)
+                          && call.state === "complete" && call.encryption === "clear" && Boolean(call.transcript?.trim());
+                        return <div key={task}>
+                          <strong>{task}</strong>
+                          <span>{String(item.status ?? "recorded")} · confidence {typeof item.confidence === "number" ? item.confidence.toFixed(2) : "—"}</span>
+                          {typeof item.model === "string" && <small> · {item.model}</small>}
+                          {typeof item.error === "string" && <p role="alert">{item.error}{typeof item.detail === "string" ? `: ${item.detail}` : ""}</p>}
+                          {typeof item.reason === "string" && <p>{item.reason}</p>}
+                          {typeof item.raw === "string" && <p>{item.raw}</p>}
+                          {Array.isArray(item.evidence) && item.evidence.map((evidence, index) => {
+                            const text = typeof evidence === "string" ? evidence : evidence && typeof evidence === "object" && typeof evidence.text === "string" ? evidence.text : null;
+                            return text ? <blockquote key={index}>{text}</blockquote> : null;
+                          })}
+                          {canRetry && <button type="button" disabled={retrying !== null} onClick={async () => {
+                            setRetrying(`${call.id}:${task}`);
+                            setRetryMessage("");
+                            try {
+                              await retryCallEnrichment(call.id, task);
+                              setRetryMessage(`${task}: retry requested.`);
+                            } catch (error) {
+                              setRetryMessage(error instanceof Error ? error.message : "Retry failed");
+                            } finally { setRetrying(null); }
+                          }}>{retrying === `${call.id}:${task}` ? "Requesting…" : "Retry"}</button>}
+                        </div>;
+                      })}
+                    </div>
+                  </details>
+                )}
 
                 <div className="card-bottom">
                   <span className="freq">{formatFrequency(call.frequencyHz)}</span>
                   <span className="duration">{formatElapsed(call.startedAt, call.endedAt)}</span>
                   {call.location && <span className="loc">⌖ {call.location.label}</span>}
+                  <button
+                    type="button"
+                    className="danger-btn"
+                    disabled={removingId !== null || call.state === "active"}
+                    aria-label={`Remove ${call.talkgroupLabel}`}
+                    onClick={async (event) => {
+                      event.stopPropagation();
+                      setRemovingId(call.id);
+                      try {
+                        const result = await purgeCalls({ callIds: [call.id], deleteAudio: true });
+                        setRemovedIds((ids) => [...ids, call.id]);
+                        if (playingId === call.id) setPlayingId(null);
+                        setPurgeMessage(`Deleted ${result.removed} recording and its audio file.`);
+                        setUndoAvailable(false);
+                      } catch (error) {
+                        setPurgeMessage(error instanceof Error ? error.message : "Remove failed");
+                      } finally {
+                        setRemovingId(null);
+                      }
+                    }}
+                  >{removingId === call.id ? "Removing…" : "Remove"}</button>
 
                   {hasAudio && (
                     <button

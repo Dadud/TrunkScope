@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Call } from "../types";
 import { formatElapsed, formatFrequency } from "../format";
 import { callAudioUrl } from "../api";
@@ -9,18 +9,26 @@ interface LiveFeedHUDProps {
   volume: number;
   onSelectCall: (call: Call) => void;
   onOpenTalkgroup: (talkgroupId: number) => void;
+  onOpenOperations: () => void;
 }
 
 export function LiveFeedHUD({
   calls,
   selectedCallId,
+  volume,
   onSelectCall,
   onOpenTalkgroup,
+  onOpenOperations,
 }: LiveFeedHUDProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [playingCallId, setPlayingCallId] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
 
-  const displayCalls = calls.slice(0, 8);
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = Math.max(0, Math.min(1, volume));
+  }, [volume, playingCallId]);
+
+  const displayCalls = calls.slice(0, 5);
 
   const getCategoryClass = (cat: string) => {
     const c = cat.toLowerCase();
@@ -50,6 +58,7 @@ export function LiveFeedHUD({
           <span className="badge">{calls.length} total</span>
         </div>
         <div className="hud-controls">
+          <button type="button" className="hud-toggle-btn" onClick={onOpenOperations} title="Open operations brief">⚡ BRIEF</button>
           <button
             type="button"
             className="hud-toggle-btn"
@@ -99,18 +108,14 @@ export function LiveFeedHUD({
                     </strong>
                     <span className="freq">{formatFrequency(call.frequencyHz)}</span>
                     <span className="time">
-                      {new Date(call.startedAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        second: "2-digit",
-                      })}
+                      {new Date(call.startedAt).toLocaleString([], { dateStyle: "short", timeStyle: "medium" })}
                     </span>
                     {call.state === "active" && <span className="live-blink">LIVE</span>}
                   </div>
 
                   <div className="hud-row-body">
                     <p className="transcript-preview">
-                      {call.summary ?? call.transcript ?? (call.state === "active" ? "Receiving audio…" : "No transcript recorded")}
+                      {call.transcript ?? (call.state === "active" ? "Receiving audio…" : "No transcript recorded")}
                     </p>
                   </div>
 
@@ -138,9 +143,27 @@ export function LiveFeedHUD({
                   {isPlaying && hasAudio && (
                     <div className="hud-audio-drawer" onClick={(e) => e.stopPropagation()}>
                       <audio
+                        ref={audioRef}
                         src={callAudioUrl(call.id)}
                         autoPlay
                         controls
+                        preload="auto"
+                        playsInline
+                        muted={false}
+                        onLoadedMetadata={() => {
+                          const player = audioRef.current;
+                          if (player) {
+                            player.volume = Math.max(0, Math.min(1, volume));
+                            player.muted = false;
+                          }
+                        }}
+                        onCanPlay={() => {
+                          // Mobile browsers may defer autoplay until the media
+                          // element has loaded; this callback still runs in the
+                          // same user-gesture playback flow and makes the
+                          // manual Play button reliable.
+                          void audioRef.current?.play().catch(() => undefined);
+                        }}
                         onEnded={() => setPlayingCallId(null)}
                       />
                     </div>

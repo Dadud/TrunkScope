@@ -217,6 +217,8 @@ pub fn parse_systems_csv(csv: &str) -> Vec<SystemProfile> {
         systems.push(SystemProfile {
             id: Uuid::new_v4(),
             name,
+            enabled: true,
+            color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
             protocol,
             control_channel_hz,
             control_channels_hz: Vec::new(),

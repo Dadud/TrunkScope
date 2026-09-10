@@ -8,6 +8,7 @@
 };
 
 use tokio::sync::{broadcast, mpsc};
+use serde::{Deserialize, Serialize};
 use trunkscope_domain::{
     Call, CallEvent, ConversationSession, PublicationPolicy, Receiver, Talkgroup,
 };
@@ -48,6 +49,8 @@ pub struct SystemProfile {
     #[serde(deserialize_with = "flexible_uuid::deserialize")]
     pub id: uuid::Uuid,
     pub name: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub protocol: String,
     pub control_channel_hz: Option<u64>,
     /// Ordered control/alternate control channels for trunked systems. The
@@ -78,6 +81,23 @@ pub struct SystemProfile {
     /// rule that encrypted calls retain metadata only.
     #[serde(default)]
     pub monitor_encrypted: Option<bool>,
+    /// Conventional DMR channel parameters.
+    #[serde(default)]
+    pub color_code: Option<u8>,
+    #[serde(default)]
+    pub time_slot: Option<u8>,
+    #[serde(default)]
+    pub contact_id: Option<u32>,
+    /// Optional conventional-channel context used to disambiguate local
+    /// locations during transcription and map enrichment.
+    #[serde(default)]
+    pub counties: Vec<String>,
+    #[serde(default)]
+    pub townships: Vec<String>,
+    #[serde(default)]
+    pub municipalities: Vec<String>,
+    #[serde(default)]
+    pub local_context: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -199,7 +219,23 @@ pub struct AppSettings {
     #[serde(default)]
     pub summary_api_key: String,
     pub summary_url: String,
+    #[serde(default = "default_summary_lookback_hours")]
+    pub summary_lookback_hours: u32,
     pub summary_refresh_minutes: u32,
+    #[serde(default = "default_transcription_prompt")]
+    pub transcription_system_prompt: String,
+    #[serde(default = "default_summary_prompt")]
+    pub summary_system_prompt: String,
+    #[serde(default = "default_location_prompt")]
+    pub location_extraction_prompt: String,
+    #[serde(default = "default_event_tagging_prompt")]
+    pub event_tagging_prompt: String,
+    #[serde(default = "default_grouping_prompt")]
+    pub conversation_grouping_prompt: String,
+    #[serde(default = "default_ai_task_settings")]
+    pub ai_tasks: HashMap<String, AiTaskSettings>,
+    #[serde(default)]
+    pub radio_vocabulary: Vec<String>,
     pub geocoder_url: String,
     #[serde(default = "default_geocoder_provider")]
     pub geocoder_provider: String,
@@ -226,6 +262,27 @@ pub struct AppSettings {
     pub metadata_retention_days: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTaskSettings {
+    pub enabled: bool,
+    #[serde(default)] pub provider: String,
+    #[serde(default)] pub model: String,
+    #[serde(default)] pub system_prompt: String,
+    pub interval_minutes: u32,
+    pub max_batch: u32,
+    pub confidence_threshold: f32,
+    pub fallback_model: String,
+    pub prompt_version: u32,
+}
+
+fn default_ai_task_settings() -> HashMap<String, AiTaskSettings> {
+    [("transcription", 1), ("unit-extraction", 10), ("tone-classification", 10), ("event-tagging", 10), ("address-normalization", 10), ("correlation", 30), ("map-placement", 10), ("workload-metrics", 60)]
+        .into_iter()
+        .map(|(task, interval_minutes)| (task.into(), AiTaskSettings { enabled: true, provider: String::new(), model: String::new(), system_prompt: String::new(), interval_minutes, max_batch: 32, confidence_threshold: 0.75, fallback_model: String::new(), prompt_version: 1 }))
+        .collect()
+}
+
 fn default_geocoder_provider() -> String {
     "nominatim".into()
 }
@@ -237,6 +294,12 @@ fn default_transcribe_provider() -> String {
 fn default_summary_provider() -> String {
     "ollama".into()
 }
+fn default_summary_lookback_hours() -> u32 { 4 }
+fn default_transcription_prompt() -> String { "Transcribe this radio transmission accurately. Preserve call signs, unit numbers, street names, and radio codes. Use the configured radio vocabulary when it helps resolve recognition ambiguity.".into() }
+fn default_summary_prompt() -> String { "Write a concise factual radio-operations brief. Group related activity, mention only details supported by the transcripts, and do not invent names, addresses, or outcomes.".into() }
+fn default_location_prompt() -> String { "Extract only a location explicitly stated in the transcript: street address, intersection, highway, landmark, or named place. Return JSON {\"location\": string|null, \"confidence\": number}. Never infer a location from a unit or agency name.".into() }
+fn default_event_tagging_prompt() -> String { "Classify the radio transmission using only evidence in the transcript. Return JSON with category (fire, ems, law, traffic, public-works, other), urgency (routine, elevated, urgent), and tags. Do not invent incident details.".into() }
+fn default_grouping_prompt() -> String { "Group transmissions only when they clearly refer to the same incident, channel, location, or dispatch exchange. Preserve uncertainty and never merge unrelated calls.".into() }
 
 impl AppSettings {
     pub fn effective_summary_url(&self) -> Option<String> {
@@ -339,7 +402,15 @@ impl Default for AppSettings {
             summary_provider: default_summary_provider(),
             summary_api_key: std::env::var("TRUNKSCOPE_SUMMARY_API_KEY").unwrap_or_default(),
             summary_url: std::env::var("TRUNKSCOPE_SUMMARY_URL").unwrap_or_default(),
+            summary_lookback_hours: default_summary_lookback_hours(),
             summary_refresh_minutes: 15,
+            transcription_system_prompt: default_transcription_prompt(),
+            summary_system_prompt: default_summary_prompt(),
+            location_extraction_prompt: default_location_prompt(),
+            event_tagging_prompt: default_event_tagging_prompt(),
+            conversation_grouping_prompt: default_grouping_prompt(),
+            ai_tasks: default_ai_task_settings(),
+            radio_vocabulary: Vec::new(),
             geocoder_url: std::env::var("TRUNKSCOPE_GEOCODER_URL").unwrap_or_default(),
             geocoder_provider: default_geocoder_provider(),
             geocoder_api_key: std::env::var("TRUNKSCOPE_GEOCODER_API_KEY").unwrap_or_default(),
@@ -860,16 +931,18 @@ impl AppState {
 
     pub fn enqueue_processing(&self, call: Call) {
         let _ = self.processing.send(call.clone());
-        if self.processing_queue.send(call).is_ok() {
-            self.processing_queue_depth.fetch_add(1, Ordering::Relaxed);
+        // Publish the count before a worker can receive and decrement it.
+        self.processing_queue_depth.fetch_add(1, Ordering::Relaxed);
+        if self.processing_queue.send(call).is_err() {
+            self.processing_queue_depth.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
-    /// Close an exchange after ten seconds of radio silence. This keeps the
+    /// Close an exchange after twenty seconds of radio silence. This keeps the
     /// operator view and downstream notifications aligned with the same
     /// conversation boundary used when calls are grouped.
     pub fn finalize_expired_sessions(&self) {
-        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(10);
+        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(20);
         let mut changed = false;
         if let Ok(mut sessions) = self.conversation_sessions.write() {
             for session in sessions.iter_mut() {
@@ -930,6 +1003,37 @@ impl AppState {
             crate::sqlite::upsert_call(&call);
             let _ = self.events.send(CallEvent::Updated(call));
         }
+    }
+
+    pub fn set_call_enrichment(&self, call_id: uuid::Uuid, task: &str, result: serde_json::Value) {
+        let updated = {
+            let mut calls = self.calls.write().expect("calls lock poisoned");
+            let Some(call) = calls.iter_mut().find(|call| call.id == call_id) else { return; };
+            if !call.enrichment.is_object() { call.enrichment = serde_json::json!({}); }
+            if let Some(object) = call.enrichment.as_object_mut() { object.insert(task.to_string(), result); }
+            call.clone()
+        };
+        crate::sqlite::upsert_call(&updated);
+        let _ = self.events.send(CallEvent::Updated(updated.clone()));
+        if let Some(sender) = self.persistence.read().expect("persistence lock poisoned").clone() { let _ = sender.send(crate::persistence::Command::Call(updated)); }
+    }
+
+    /// Replace a transcript supplied by an operator without re-running the
+    /// conversation aggregation or generating a per-call summary.
+    pub fn override_call_transcript(&self, call_id: uuid::Uuid, transcript: String) -> Option<Call> {
+        let updated = {
+            let mut calls = self.calls.write().expect("calls lock poisoned");
+            calls.iter_mut().find(|call| call.id == call_id).map(|call| {
+                call.transcript = Some(transcript.clone());
+                call.clone()
+            })
+        }?;
+        if let Some(sender) = self.persistence.read().expect("persistence lock poisoned").as_ref() {
+            let _ = sender.send(crate::persistence::Command::Call(updated.clone()));
+        }
+        crate::sqlite::upsert_call(&updated);
+        let _ = self.events.send(CallEvent::Updated(updated.clone()));
+        Some(updated)
     }
 
     pub fn set_call_location(

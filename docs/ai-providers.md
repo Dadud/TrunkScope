@@ -2,6 +2,18 @@
 
 TrunkScope never bundles AI models. All transcription, summarization, and geocoding run on **external** services you configure — on your LAN or in the cloud.
 
+## Enrichment behavior and current limitations
+
+The scheduled and manual transcript enrichment paths accept only completed calls with clear encryption status and nonempty transcripts. Encrypted, unknown-encryption, active, and failed calls are excluded even when a legacy record contains text.
+
+Task results are saved to the appliance SQLite database. Scheduled processing checks both the transcript and the effective provider, endpoint, model, prompt, and prompt version before reusing a completed result. Changing these settings invalidates the cached result on the next scheduled pass.
+
+Model output must be a JSON object. Invalid JSON is reported as `invalid-output`; provider timeouts are reported separately. Missing confidence is unknown, not an automatically assigned score. Top-level evidence quotes must occur verbatim in the transcript; invalid quotes are reported as `invalid-evidence`. Offsets are derived in Unicode code points. This validates the quoted text, not whether it supports an extracted field; nested field-level evidence validation is still incomplete.
+
+Audio dispatch-tone classification is not implemented. The scheduler reports it as skipped, and manual execution reports it as unavailable. Transcript words such as “tone out” do not establish that two-tone, MDC, or DTMF audio was detected.
+
+The current correlation task extracts potential references from individual calls; it does not yet establish cross-channel incident links. The map-placement task extracts location candidates; it does not yet implement the full confidence-based placement/review workflow. Per-task fallback routing, evidence-span verification, and the workload dashboard still require implementation and end-to-end acceptance. A successful appliance build or an HTTP 200 response does not establish completion of these features.
+
 ## Network rule
 
 Inside Docker, **`localhost` is the container itself**. Always use the host **LAN IP**:

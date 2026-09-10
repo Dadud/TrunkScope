@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { pickSummaryModel, pickTranscribeModel } from "../integrationModels";
 
 type IntegrationModelFieldProps = {
@@ -25,6 +25,7 @@ export function IntegrationModelField({
   kind,
 }: IntegrationModelFieldProps) {
   const [manual, setManual] = useState(false);
+  const fieldId = useId();
 
   useEffect(() => {
     if (manual || models.length === 0) return;
@@ -38,16 +39,16 @@ export function IntegrationModelField({
   }, [kind, manual, models, onChange, value]);
 
   return (
-    <label>
-      {label}
+    <div className="integration-model-field">
+      <label htmlFor={fieldId}>{label}</label>
       <div className="btn-row">
-        <button type="button" onClick={onRefresh} disabled={loading}>
+        <button type="button" aria-label={`Discover ${label.toLowerCase()} options`} onClick={onRefresh} disabled={loading}>
           {loading ? "Discovering…" : "Discover models"}
         </button>
         {source && <span className="pane-desc">Catalog: {source}</span>}
       </div>
       {models.length > 0 && !manual ? (
-        <select value={value} onChange={(event) => onChange(event.target.value)}>
+        <select id={fieldId} value={value} onChange={(event) => onChange(event.target.value)}>
           {models.map((model) => (
             <option key={model} value={model}>
               {model}
@@ -55,7 +56,7 @@ export function IntegrationModelField({
           ))}
         </select>
       ) : (
-        <input value={value} onChange={(event) => onChange(event.target.value)} />
+        <input id={fieldId} value={value} onChange={(event) => onChange(event.target.value)} />
       )}
       {models.length > 0 && (
         <button type="button" className="quiet-btn" onClick={() => setManual((current) => !current)}>
@@ -63,6 +64,6 @@ export function IntegrationModelField({
         </button>
       )}
       {error && <span className="pane-desc warning">{error}</span>}
-    </label>
+    </div>
   );
 }

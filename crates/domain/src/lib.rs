@@ -18,6 +18,9 @@ pub struct Receiver {
     pub center_frequency_hz: Option<u64>,
     pub sample_rate_hz: Option<u32>,
     pub gain_db: Option<f32>,
+    /// Driver-specific gain element values, such as SDRplay IFGR/RFGR.
+    #[serde(default)]
+    pub gain_settings: serde_json::Value,
     pub ppm: f32,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -172,6 +175,10 @@ pub struct Call {
     pub summary: Option<String>,
     pub location: Option<IncidentLocation>,
     pub audio: Option<AudioAsset>,
+    /// Structured AI enrichment results keyed by task name. Kept on the call
+    /// so existing SQLite/Postgres/file persistence carries results forward.
+    #[serde(default)]
+    pub enrichment: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

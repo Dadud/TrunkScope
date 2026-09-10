@@ -15,7 +15,7 @@ interface HeaderProps {
   onToggleAutoPlay: () => void;
   runtime?: RuntimeStatus;
   diagnostics?: Diagnostics;
-  onOpenDrawer: (drawer: "operations" | "talkgroups" | "archive" | "appliance") => void;
+  onOpenDrawer: (drawer: "operations" | "talkgroups" | "archive" | "appliance" | "settings" | null) => void;
   onLogout: () => void;
   username?: string;
 }
@@ -173,34 +173,34 @@ export function Header({
           <button
             type="button"
             className="nav-btn"
-            onClick={() => onOpenDrawer("operations")}
-            title="Open AI Operations Brief"
+            onClick={() => onOpenDrawer(null)}
+            title="Return to the live map"
           >
-            ⚡ BRIEF
-          </button>
-          <button
-            type="button"
-            className="nav-btn"
-            onClick={() => onOpenDrawer("talkgroups")}
-            title="Open Talkgroup & Session Directory"
-          >
-            📻 TALKGROUPS
+            🗺️ LISTEN
           </button>
           <button
             type="button"
             className="nav-btn"
             onClick={() => onOpenDrawer("archive")}
-            title="Open Call Archive"
+            title="Open recorded calls"
           >
-            🗄️ ARCHIVE
+            🗄️ RECORDINGS
           </button>
           <button
             type="button"
             className="nav-btn admin-btn"
             onClick={() => onOpenDrawer("appliance")}
-            title="Open Appliance Console (SDR, Scan lists, Settings)"
+            title="Configure receivers and radio sources"
           >
-            ⚙️ CONSOLE
+            ⚙️ RADIO SETUP
+          </button>
+          <button
+            type="button"
+            className="nav-btn"
+            onClick={() => onOpenDrawer("settings")}
+            title="Open application settings"
+          >
+            🛠️ SETTINGS
           </button>
         </div>
 

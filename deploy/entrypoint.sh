@@ -12,9 +12,4 @@ install -d \
 # that path working inside the single container.
 ln -sfn /var/lib/trunkscope/audio /generated
 
-if [ -x /opt/sdrplay/sdrplay_apiService ]; then
-  echo "starting mounted SDRplay API service"
-  /opt/sdrplay/sdrplay_apiService &
-fi
-
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/trunkscope.conf

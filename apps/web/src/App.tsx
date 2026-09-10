@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState, useRef, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  callAudioUrl,
   getAuthStatus,
   getDiagnostics,
   getRuntime,
@@ -24,7 +23,10 @@ import { OperationsDrawer } from "./components/OperationsDrawer";
 import { TalkgroupDrawer } from "./components/TalkgroupDrawer";
 import { ArchiveDrawer } from "./components/ArchiveDrawer";
 import { ApplianceDrawer } from "./components/ApplianceDrawer";
+import { MobileNav } from "./components/MobileNav";
 import { FirstRunWizard } from "./components/FirstRunWizard";
+import { useLiveAudio } from "./useLiveAudio";
+import { callCategory, matchesCall } from "./callPresentation";
 
 const emptySnapshot: Snapshot = {
   receivers: [],
@@ -49,27 +51,35 @@ export default function App() {
   const [volume, setVolume] = useState(0.75);
   const [muted, setMuted] = useState(false);
   const [autoPlay, setAutoPlay] = useState(false);
-  const autoPlayAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playbackError = useLiveAudio(data.calls, autoPlay, muted ? 0 : volume);
 
   // Telemetry & Settings
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus | undefined>();
   const [diagnostics, setDiagnostics] = useState<Diagnostics | undefined>();
+  const [connectionError, setConnectionError] = useState("");
 
   // Auth
   const [authReady, setAuthReady] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authAttempt, setAuthAttempt] = useState(0);
   const [authRequired, setAuthRequired] = useState(false);
   const [setupRequired, setSetupRequired] = useState(false);
   const [session, setSession] = useState<{ username: string; role: string } | undefined>();
 
   // Drawers
-  const [activeDrawer, setActiveDrawer] = useState<"operations" | "talkgroups" | "archive" | "appliance" | null>(null);
+  const [activeDrawer, setActiveDrawer] = useState<"operations" | "talkgroups" | "archive" | "appliance" | "settings" | null>(null);
   const [inspectedTalkgroupId, setInspectedTalkgroupId] = useState<number | undefined>();
 
   // Initial Auth Check
   useEffect(() => {
-    getAuthStatus()
+    let active = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12_000);
+    setAuthError("");
+    getAuthStatus(controller.signal)
       .then(async (status) => {
+        if (!active) return;
         setSetupRequired(Boolean(status.setupRequired));
         setAuthRequired(status.enabled && !status.localOnly);
         if (!status.enabled || status.localOnly) {
@@ -77,11 +87,15 @@ export default function App() {
           setAuthReady(true);
           return;
         }
-        setSession(await getSession());
+        const nextSession = await getSession(controller.signal);
+        if (!active) return;
+        setSession(nextSession);
         setAuthReady(true);
       })
-      .catch(() => setAuthReady(true));
-  }, []);
+      .catch(() => { if (active) setAuthError("Cannot reach the appliance. Check its connection and try again."); })
+      .finally(() => window.clearTimeout(timeout));
+    return () => { active = false; window.clearTimeout(timeout); controller.abort(); };
+  }, [authAttempt]);
 
   // Periodic Polling
   useEffect(() => {
@@ -89,7 +103,10 @@ export default function App() {
     const refresh = () => {
       getRuntime().then(setRuntime).catch(() => undefined);
       getDiagnostics().then(setDiagnostics).catch(() => undefined);
-      getSnapshot().then(setData).catch(() => undefined);
+      getSnapshot().then((snapshot) => {
+        setData(snapshot);
+        setConnectionError("");
+      }).catch(() => setConnectionError("Appliance connection lost. Displayed calls may be stale; reconnecting…"));
     };
     refresh();
     const timer = window.setInterval(refresh, 5000);
@@ -102,23 +119,9 @@ export default function App() {
     getSettings().then(setSettings).catch(() => undefined);
   }, [authReady, authRequired, session]);
 
-  // Handle Autoplay for incoming calls
-  const triggerAutoPlay = useCallback(
-    (call: Call) => {
-      if (!autoPlay || muted || call.encryption !== "clear" || !call.audio) return;
-      if (!autoPlayAudioRef.current) {
-        autoPlayAudioRef.current = new Audio();
-      }
-      const audio = autoPlayAudioRef.current;
-      audio.volume = Math.max(0, Math.min(1, volume));
-      audio.src = callAudioUrl(call.id);
-      audio.play().catch(() => undefined);
-    },
-    [autoPlay, muted, volume]
-  );
-
   // WebSocket Live Call Stream
   useEffect(() => {
+    if (!authReady || (authRequired && !session)) return;
     const controller = new AbortController();
     getSnapshot(controller.signal)
       .then(setData)
@@ -127,15 +130,11 @@ export default function App() {
     const unsubscribe = subscribeToCalls(
       (event) => {
         setData((curr) => {
-          const exists = curr.calls.some((c) => c.id === event.payload.id);
           const updated = [
             event.payload,
             ...curr.calls.filter((c) => c.id !== event.payload.id),
-          ].slice(0, 150);
+          ].sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 150);
 
-          if (!exists && event.payload.state === "complete") {
-            triggerAutoPlay(event.payload);
-          }
           return { ...curr, calls: updated };
         });
       },
@@ -146,51 +145,32 @@ export default function App() {
       controller.abort();
       unsubscribe();
     };
-  }, [triggerAutoPlay]);
+  }, [authReady, authRequired, session]);
 
   // Default selected call
   useEffect(() => {
-    if (!selectedCall && data.calls.length > 0) {
-      setSelectedCall(data.calls[0]);
-    }
-  }, [data.calls, selectedCall]);
+    setSelectedCall((current) => current
+      ? data.calls.find((call) => call.id === current.id) ?? current
+      : data.calls[0]);
+  }, [data.calls]);
 
   // Category counts
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = { fire: 0, ems: 0, law: 0, traffic: 0, other: 0 };
     data.calls.forEach((call) => {
-      const c = call.category.toLowerCase();
-      if (c.includes("fire") || c.includes("structure") || c.includes("alarm")) counts.fire++;
-      else if (c.includes("medical") || c.includes("ems") || c.includes("rescue")) counts.ems++;
-      else if (c.includes("police") || c.includes("law") || c.includes("sheriff")) counts.law++;
-      else if (c.includes("traffic") || c.includes("crash") || c.includes("collision")) counts.traffic++;
-      else counts.other++;
+      counts[callCategory(call.category)]++;
     });
     return counts;
   }, [data.calls]);
 
   // Filter calls by search and category
   const filteredCalls = useMemo(() => {
-    return data.calls.filter((call) => {
-      const c = call.category.toLowerCase();
-      let matchCat = true;
-      if (selectedCategory === "fire") matchCat = c.includes("fire") || c.includes("structure") || c.includes("alarm");
-      else if (selectedCategory === "ems") matchCat = c.includes("medical") || c.includes("ems") || c.includes("rescue");
-      else if (selectedCategory === "law") matchCat = c.includes("police") || c.includes("law") || c.includes("sheriff");
-      else if (selectedCategory === "traffic") matchCat = c.includes("traffic") || c.includes("crash") || c.includes("collision");
-
-      const matchSearch =
-        !searchQuery ||
-        `${call.talkgroupLabel} ${call.talkgroupId} ${call.systemName} ${call.transcript ?? ""} ${call.location?.label ?? ""}`
-          .toLowerCase()
-          .includes(searchQuery.toLowerCase());
-
-      return matchCat && matchSearch;
-    });
+    return data.calls.filter((call) => matchesCall(call, selectedCategory, searchQuery))
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }, [data.calls, selectedCategory, searchQuery]);
 
   const homeCoords: [number, number] = useMemo(() => {
-    if (settings?.homeLongitude && settings?.homeLatitude) {
+    if (settings?.homeLongitude != null && settings?.homeLatitude != null) {
       return [settings.homeLongitude, settings.homeLatitude];
     }
     return [-90.5785, 44.3984];
@@ -223,7 +203,7 @@ export default function App() {
             <span className="brand-mark">⌁</span>
             <span>TRUNKSCOPE</span>
           </div>
-          <p className="loading-text">Initializing Tactical Console…</p>
+          {authError ? <><p role="alert">{authError}</p><button type="button" onClick={() => setAuthAttempt(attempt => attempt + 1)}>Retry connection</button></> : <p className="loading-text">Connecting to appliance…</p>}
         </div>
       </main>
     );
@@ -276,6 +256,7 @@ export default function App() {
 
       {/* Main Full-Screen Map Console */}
       <main className="tactical-map-viewport">
+        {(connectionError || playbackError) && <div role="alert" className="console-alert">{connectionError || playbackError}</div>}
         <MapConsole
           calls={filteredCalls}
           selectedCall={selectedCall}
@@ -300,14 +281,18 @@ export default function App() {
           volume={muted ? 0 : volume}
           onSelectCall={setSelectedCall}
           onOpenTalkgroup={handleOpenTalkgroup}
+          onOpenOperations={() => setActiveDrawer("operations")}
         />
       </main>
+
+      <MobileNav active={activeDrawer} onOpen={setActiveDrawer} />
 
       {/* Drawers */}
       <OperationsDrawer
         isOpen={activeDrawer === "operations"}
         onClose={() => setActiveDrawer(null)}
         refreshMinutes={settings?.summaryRefreshMinutes ?? 15}
+        defaultLookbackHours={settings?.summaryLookbackHours ?? 4}
       />
 
       <TalkgroupDrawer
@@ -330,7 +315,8 @@ export default function App() {
       />
 
       <ApplianceDrawer
-        isOpen={activeDrawer === "appliance"}
+        isOpen={activeDrawer === "appliance" || activeDrawer === "settings"}
+        section={activeDrawer === "settings" ? "settings" : "radio"}
         onClose={() => setActiveDrawer(null)}
         snapshot={data}
         onUpdateReceiver={handleUpdateReceiver}

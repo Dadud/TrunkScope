@@ -20,6 +20,7 @@ pub fn spawn(state: Arc<AppState>) {
         center_frequency_hz: Some(851_012_500),
         sample_rate_hz: Some(2_400_000),
         gain_db: Some(28.0),
+        gain_settings: serde_json::json!({}),
         ppm: 0.0,
         enabled: true,
         role: trunkscope_domain::ReceiverRole::General,
@@ -109,6 +110,7 @@ pub fn spawn(state: Arc<AppState>) {
                     confidence: 0.92,
                 }),
                 audio: None,
+                enrichment: serde_json::json!({}),
             };
             state.upsert_call(call.clone(), CallEvent::Started(call.clone()));
             sleep(Duration::from_secs(3)).await;

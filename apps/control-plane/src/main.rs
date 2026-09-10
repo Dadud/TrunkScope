@@ -2,6 +2,7 @@
 mod apply;
 mod auth;
 mod decoder;
+mod enrichment;
 mod file_ingest;
 mod imports;
 mod persistence;
@@ -37,7 +38,7 @@ async fn main() -> Result<()> {
     sqlite::hydrate(&state);
     retention::spawn(Arc::clone(&state));
     // Session boundaries are runtime state, not a UI heuristic. Finalize an
-    // exchange once it has been quiet for the configured ten-second dwell.
+    // exchange once it has been quiet for the configured twenty-second dwell.
     {
         let session_state = Arc::clone(&state);
         tokio::spawn(async move {
@@ -89,6 +90,7 @@ async fn main() -> Result<()> {
                 center_frequency_hz: Some(settings.radio_frequency_hz),
                 sample_rate_hz: Some(settings.radio_sample_rate_hz),
                 gain_db: settings.radio_gain_db,
+                gain_settings: serde_json::json!({}),
                 ppm: settings.radio_ppm,
                 enabled: true,
                 role: trunkscope_domain::ReceiverRole::General,
@@ -180,6 +182,7 @@ async fn main() -> Result<()> {
         });
     }
     processor::spawn(Arc::clone(&state));
+    enrichment::spawn(Arc::clone(&state));
     file_ingest::spawn(Arc::clone(&state));
     // An enabled scan list is an operator intent, not merely UI metadata.
     // Restore the first enabled list after restart so radiod immediately

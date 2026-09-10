@@ -112,6 +112,13 @@ pub async fn transcribe(
     let mut form = multipart::Form::new()
         .part("file", file)
         .text("model", settings.transcribe_model.clone());
+    let prompt = settings.transcription_system_prompt.trim();
+    if !prompt.is_empty() {
+        form = form.text("prompt", prompt.to_string());
+    }
+    if !settings.radio_vocabulary.is_empty() {
+        form = form.text("vocabulary", settings.radio_vocabulary.join(", "));
+    }
     if settings.transcribe_provider != "openai-whisper" {
         form = form.text("response_format", "json");
     }
@@ -326,17 +333,7 @@ pub async fn geocode(
                 .json::<serde_json::Value>()
                 .await
                 .ok()?;
-            let first = response.get("features")?.as_array()?.first()?;
-            let coords = first.get("center")?.as_array()?;
-            (
-                coords.first()?.as_f64()?,
-                coords.get(1)?.as_f64()?,
-                first
-                    .get("place_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(hint)
-                    .to_string(),
-            )
+            parse_mapbox_location(&response, hint)?
         }
         _ => {
             let mut request = client
@@ -356,12 +353,29 @@ pub async fn geocode(
             parse_lat_lon_label(&response, hint)?
         }
     };
+    if !latitude.is_finite()
+        || !longitude.is_finite()
+        || !(-90.0..=90.0).contains(&latitude)
+        || !(-180.0..=180.0).contains(&longitude)
+    {
+        return None;
+    }
     Some(IncidentLocation {
         label,
         latitude,
         longitude,
         confidence: 0.7,
     })
+}
+
+fn parse_mapbox_location(response: &serde_json::Value, hint: &str) -> Option<(f64, f64, String)> {
+    let first = response.get("features")?.as_array()?.first()?;
+    let coords = first.get("center")?.as_array()?;
+    Some((
+        coords.get(1)?.as_f64()?,
+        coords.first()?.as_f64()?,
+        first.get("place_name").and_then(|v| v.as_str()).unwrap_or(hint).to_owned(),
+    ))
 }
 
 fn parse_lat_lon_label(response: &[serde_json::Value], hint: &str) -> Option<(f64, f64, String)> {
@@ -609,9 +623,7 @@ pub async fn llm_location_hint(
     if settings.effective_summary_url().is_none() {
         return None;
     }
-    let prompt = format!(
-        "Extract only a street address or intersection mentioned in this radio transcript. Reply with just the location text, or NONE if none is present.\n\nTranscript: {transcript}"
-    );
+    let prompt = format!("{}\n\nTranscript:\n{}", settings.location_extraction_prompt.trim(), transcript);
     let hint = summarize(client, settings, transcript, &prompt)
         .await
         .ok()?;
@@ -626,6 +638,16 @@ pub async fn llm_location_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapbox_longitude_latitude_order_is_converted() {
+        let response = serde_json::json!({"features": [{"center": [-90.5785, 44.3984], "place_name": "Pittsville"}]});
+        let (latitude, longitude, label) = parse_mapbox_location(&response, "fallback").unwrap();
+        assert_eq!(latitude, 44.3984);
+        assert_eq!(longitude, -90.5785);
+        assert_eq!(label, "Pittsville");
+        assert!(parse_mapbox_location(&serde_json::json!({"features": []}), "none").is_none());
+    }
 
     #[test]
     fn extracts_location_hint_from_transcript() {

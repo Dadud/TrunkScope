@@ -1,4 +1,5 @@
 use std::{process::Stdio, sync::Arc, time::Instant};
+use std::sync::atomic::Ordering;
 
 use axum::{
     Json, Router,
@@ -24,7 +25,7 @@ use trunkscope_domain::{
 
 use crate::{
     receiver_presets,
-    state::{AppSettings, AppState, ScanList, SystemProfile},
+    state::{AiTaskSettings, AppSettings, AppState, ScanList, SystemProfile},
 };
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -33,6 +34,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/health/live", get(liveness))
         .route("/api/v1/health/ready", get(readiness))
         .route("/api/v1/runtime", get(runtime))
+        .route("/api/v1/ai/tasks", get(ai_tasks).put(save_ai_tasks))
+        .route("/api/v1/ai/tasks/status", get(ai_tasks_status))
+        .route("/api/v1/ai/models/capabilities", get(ai_model_capabilities))
+        .route("/api/v1/ai/prompts/test", post(ai_prompt_test))
+        .route("/api/v1/ai/workload", get(ai_workload))
+        .route("/api/v1/ai/tasks/{task}/run", post(run_ai_task))
         .route("/api/v1/diagnostics", get(diagnostics))
         .route("/api/v1/decoder/config", get(decoder_config))
         .route("/api/v1/decoder/apply", post(decoder_apply))
@@ -67,6 +74,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/receivers/{id}/stop", post(receiver_stop))
         .route("/api/v1/receivers/{id}/restart", post(receiver_restart))
         .route("/api/v1/calls/{id}/location", put(update_call_location))
+        .route("/api/v1/calls/{id}/enrichment", get(call_enrichment))
+        .route("/api/v1/calls/{id}/enrichment/{task}/retry", post(retry_call_enrichment))
+        .route("/api/v1/calls/{id}/transcript", put(update_call_transcript))
+        .route("/api/v1/calls/{id}/retranscribe", post(retranscribe_call))
         .route("/api/v1/calls/purge", post(purge_calls))
         .route("/api/v1/calls/purge/undo", post(undo_purge_calls))
         .route("/api/v1/calls", get(calls))
@@ -243,9 +254,10 @@ struct RuntimeResponse {
 }
 
 async fn runtime(State(state): State<Arc<AppState>>) -> Json<RuntimeResponse> {
-    let calls = state.calls.read().expect("calls lock poisoned");
-    let receivers = state.receivers.read().expect("receiver lock poisoned");
-    let settings = state.settings.read().expect("settings lock poisoned");
+    let active_call_count = state.calls.read().expect("calls lock poisoned")
+        .iter().filter(|call| call.state == trunkscope_domain::CallState::Active).count();
+    let receivers = state.receivers.read().expect("receiver lock poisoned").clone();
+    let settings = state.settings.read().expect("settings lock poisoned").clone();
     let mut ai_worker_status = state
         .ai_worker_status
         .read()
@@ -306,10 +318,7 @@ async fn runtime(State(state): State<Arc<AppState>>) -> Json<RuntimeResponse> {
             || crate::sqlite::db_path().is_file(),
         ai_worker_status,
         decoder_config_pending: state.pending_apply(),
-        active_call_count: calls
-            .iter()
-            .filter(|call| call.state == trunkscope_domain::CallState::Active)
-            .count(),
+        active_call_count,
     })
 }
 
@@ -340,8 +349,10 @@ struct ComponentStatus {
 }
 
 async fn diagnostics(State(state): State<Arc<AppState>>) -> Json<DiagnosticsResponse> {
-    let receivers = state.receivers.read().expect("receiver lock poisoned");
-    let settings = state.settings.read().expect("settings lock poisoned");
+    // Release guards before decoder_config_value reacquires these locks. A
+    // queued writer can otherwise deadlock a recursive read on the same thread.
+    let receivers = state.receivers.read().expect("receiver lock poisoned").clone();
+    let settings = state.settings.read().expect("settings lock poisoned").clone();
     let decoder_mode = settings.radio_mode == "decoder";
     let capture_ok = receivers
         .iter()
@@ -395,10 +406,7 @@ async fn diagnostics(State(state): State<Arc<AppState>>) -> Json<DiagnosticsResp
         .read()
         .expect("AI error lock poisoned")
         .clone();
-    let enriched_calls = calls
-        .iter()
-        .filter(|call| call.transcript.is_some() || call.summary.is_some())
-        .count();
+    let enriched_calls = calls.iter().filter(|call| call.transcript.is_some()).count();
     let last_audio_file = calls
         .iter()
         .filter_map(|call| {
@@ -493,8 +501,9 @@ fn systems_for_receiver<'a>(
     systems
         .iter()
         .filter(|system| {
-            system.receiver_id == Some(receiver_id)
+            system.enabled && (system.receiver_id == Some(receiver_id)
                 || (system.receiver_id.is_none() && default_receiver_id == Some(receiver_id))
+            )
         })
         .collect()
 }
@@ -514,12 +523,12 @@ fn build_decoder_source(
 ) -> serde_json::Value {
     let p25_controls: Vec<u64> = assigned
         .iter()
-        .filter(|system| is_trunked(system))
+        .filter(|system| system.enabled && is_trunked(system))
         .flat_map(|system| p25_control_channels(system, site_filter))
         .collect();
     let analog_frequencies: Vec<u64> = assigned
         .iter()
-        .filter(|system| system.protocol == "analog-fm")
+        .filter(|system| system.protocol == "analog-fm" || system.protocol == "conventional-p25" || system.protocol == "conventional-dmr")
         .filter_map(|system| system.frequency_hz)
         .collect();
     let all_tuning: Vec<u64> = p25_controls
@@ -529,16 +538,32 @@ fn build_decoder_source(
         .collect();
     let (requested_center, requested_span) = tuning_span(&all_tuning);
     let has_p25 = assigned.iter().any(|system| system.protocol == "p25");
-    let has_dmr = assigned.iter().any(|system| system.protocol == "dmr");
+    let has_dmr = assigned.iter().any(|system| system.protocol == "dmr" || system.protocol == "conventional-dmr");
     let has_trunked = has_p25 || has_dmr;
     let has_analog = assigned.iter().any(|system| system.protocol == "analog-fm");
     let gain = receiver.gain_db.or(settings.radio_gain_db).unwrap_or(40.0);
+    let center = requested_center.unwrap_or(receiver.center_frequency_hz.unwrap_or(settings.radio_frequency_hz));
+    let requested_rate = requested_span.unwrap_or(0).max(if has_trunked { 6_000_000 } else { 0 }).max(receiver.sample_rate_hz.unwrap_or(settings.radio_sample_rate_hz) as u64);
+    // SDRplay's osmosdr path requires rates divisible by 24 kHz. 4.5 MHz
+    // (a common user setting) is rejected by gr-osmosdr and causes the
+    // source to stop receiving immediately, so clamp RSP1B plans to the
+    // stable 6 MHz profile and normalize all other rates as well.
+    let rate = if receiver.driver == ReceiverDriver::Sdrplay {
+        requested_rate.max(6_000_000)
+    } else {
+        requested_rate.div_ceil(24_000) * 24_000
+    };
+    let low = center.saturating_sub(rate / 2);
+    let high = center.saturating_add(rate / 2);
+    let uncovered: Vec<u64> = all_tuning.iter().copied().filter(|frequency| *frequency < low || *frequency > high).collect();
     let mut source = serde_json::json!({
-        "center": requested_center.unwrap_or(receiver.center_frequency_hz.unwrap_or(settings.radio_frequency_hz)),
-        "rate": requested_span.unwrap_or(0).max(if has_trunked { 6_000_000 } else { 0 }).max(receiver.sample_rate_hz.unwrap_or(settings.radio_sample_rate_hz) as u64),
+        "center": center,
+        "rate": rate,
+        "plannedFrequencies": all_tuning,
+        "uncoveredFrequencies": uncovered,
         "error": receiver.ppm,
         "gain": gain,
-        "gainSettings": receiver_presets::default_gain_settings(receiver.driver, gain),
+        "gainSettings": if receiver.gain_settings.as_object().is_some_and(|values| !values.is_empty()) { receiver.gain_settings.clone() } else { receiver_presets::default_gain_settings(receiver.driver, gain) },
         "digitalRecorders": if has_p25 { receiver.digital_recorders.unwrap_or(6) } else { 0 },
         "analogRecorders": if has_analog { receiver.analog_recorders.unwrap_or(4) } else { 0 },
         "dmrRecorders": if has_dmr { receiver.dmr_recorders.unwrap_or(4) } else { 0 },
@@ -575,7 +600,7 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
             .collect();
         let all_analog: Vec<u64> = systems
             .iter()
-            .filter(|system| system.protocol == "analog-fm")
+            .filter(|system| system.protocol == "analog-fm" || system.protocol == "conventional-p25" || system.protocol == "conventional-dmr")
             .filter_map(|system| system.frequency_hz)
             .collect();
         let all_tuning: Vec<u64> = all_p25
@@ -594,9 +619,11 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
             format!("soapy=0,{}", settings.radio_device)
         };
         let gain = settings.radio_gain_db.unwrap_or(40.0);
+        let requested_rate = requested_span.unwrap_or(0).max(6_000_000).max(settings.radio_sample_rate_hz as u64);
+        let rate = requested_rate.div_ceil(24_000) * 24_000;
         sources.push(serde_json::json!({
             "center": requested_center.unwrap_or(settings.radio_frequency_hz),
-            "rate": requested_span.unwrap_or(0).max(6_000_000).max(settings.radio_sample_rate_hz as u64),
+            "rate": rate,
             "error": settings.radio_ppm,
             "gain": gain,
             "gainSettings": receiver_presets::default_gain_settings(ReceiverDriver::Sdrplay, gain),
@@ -611,7 +638,7 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         sources.push(build_decoder_source(
             receiver,
             &settings,
-            &systems.iter().collect::<Vec<_>>(),
+            &systems.iter().filter(|system| system.enabled).collect::<Vec<_>>(),
             site_filter.as_deref(),
             receiver.soapy_index.unwrap_or(0),
         ));
@@ -634,7 +661,7 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
                 sources.push(build_decoder_source(
                     receiver,
                     &settings,
-                    &systems.iter().collect::<Vec<_>>(),
+                    &systems.iter().filter(|system| system.enabled).collect::<Vec<_>>(),
                     site_filter.as_deref(),
                     receiver.soapy_index.unwrap_or(index as u32),
                 ));
@@ -700,10 +727,29 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         })
         .collect();
     drop(talkgroups);
+    for system in systems.iter().filter(|system| system.enabled && (system.protocol == "conventional-p25" || system.protocol == "conventional-dmr")) {
+        let Some(frequency) = system.frequency_hz else { continue };
+        let mut conventional = serde_json::json!({
+            "type": if system.protocol == "conventional-dmr" { "conventionalDMR" } else { "conventionalP25" },
+            "shortName": short_name_for_system(system),
+            "channels": [frequency],
+            "modulation": system.modulation.as_deref().unwrap_or("fsk4"),
+            "squelch": system.squelch_db.unwrap_or(-70.0),
+            "recordUnknown": true,
+            "hideEncrypted": false,
+        });
+        if system.protocol == "conventional-dmr" {
+            if let Some(value) = system.color_code { conventional["colorCode"] = serde_json::json!(value); }
+            if let Some(value) = system.time_slot { conventional["slot"] = serde_json::json!(value); }
+            if let Some(value) = system.contact_id { conventional["talkgroup"] = serde_json::json!(value); }
+        }
+        attach_upload_script(&mut conventional);
+        configured_systems.push(conventional);
+    }
     if systems.iter().any(|system| system.protocol == "analog-fm") {
         let analog: Vec<_> = systems
             .iter()
-            .filter(|system| system.protocol == "analog-fm")
+            .filter(|system| system.enabled && system.protocol == "analog-fm")
             .collect();
         // Trunk Recorder feeds shortName straight into recording filenames, so
         // operator display names (spaces, slashes, ampersands) stay out of it.
@@ -712,7 +758,7 @@ pub fn decoder_config_value(state: &Arc<AppState>) -> serde_json::Value {
         let squelch = analog
             .iter()
             .find_map(|system| system.squelch_db)
-            .unwrap_or(-60.0);
+            .unwrap_or(-70.0);
         let decode_mdc = analog.iter().any(|system| system.decode_mdc == Some(true));
         let mut conventional = serde_json::json!({
             "type": "conventional",
@@ -875,7 +921,7 @@ fn write_analog_channel_file(
         };
         let tone = system.tone.as_deref().unwrap_or("");
         let label = system.name.replace([',', '\n', '\r'], " ");
-        let squelch = system.squelch_db.unwrap_or(-60.0);
+        let squelch = system.squelch_db.unwrap_or(-70.0);
         csv.push_str(&format!(
             "{},{},{},{},{},Analog,true,true,{}\n",
             900000 + index,
@@ -1180,6 +1226,8 @@ struct ReceiverInput {
     sample_rate_hz: Option<u32>,
     gain_db: Option<f32>,
     #[serde(default)]
+    gain_settings: serde_json::Value,
+    #[serde(default)]
     ppm: f32,
     #[serde(default = "default_receiver_enabled")]
     enabled: bool,
@@ -1210,6 +1258,7 @@ fn receiver_from_input(input: ReceiverInput, id: uuid::Uuid) -> Receiver {
         center_frequency_hz: input.center_frequency_hz,
         sample_rate_hz: input.sample_rate_hz,
         gain_db: input.gain_db,
+        gain_settings: input.gain_settings,
         ppm: input.ppm,
         enabled: input.enabled,
         role: input.role,
@@ -1685,7 +1734,7 @@ struct OperationsSummary {
 async fn generate_operations_ai_summary(
     state: &AppState,
     hours: u32,
-    threads: &[IncidentThread],
+    calls: &[Call],
 ) -> (Option<String>, String) {
     let settings = state
         .settings
@@ -1698,44 +1747,60 @@ async fn generate_operations_ai_summary(
     if settings.effective_summary_url().is_none() {
         return (None, "provider-unconfigured".into());
     }
+    // Build the brief from recent transcripts only. Per-call summaries and
+    // calls outside the requested window are intentionally excluded.
+    let context = transcript_context(calls, hours);
+    if context.is_empty() {
+        return (
+            None,
+            "no-transcripts".into(),
+        );
+    }
+    let prompt = format!(
+        "{}\n\nWrite a concise factual radio-operations brief (maximum 120 words) for the last {hours} hours. Group related activity, mention only details supported by the excerpts, call out notable incidents and locations, and say when there is not enough information. Do not invent names, addresses, or outcomes.\n\n{context}",
+        settings.summary_system_prompt.trim()
+    );
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(45),
+        crate::providers::summarize(
+            &crate::providers::http_client(),
+            &settings,
+            &context,
+            &prompt,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(text)) if !text.trim().is_empty() => (Some(text), "generated".into()),
+        Ok(Ok(_)) => (None, "provider-invalid-response".into()),
+        _ => (None, "provider-unavailable".into()),
+    }
+}
+
+fn transcript_context(calls: &[Call], hours: u32) -> String {
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours as i64);
     let mut context = String::new();
-    for thread in threads.iter().take(12) {
+    for call in calls.iter().filter(|call| call.started_at >= cutoff) {
+        let Some(transcript) = call.transcript.as_deref().map(str::trim) else {
+            continue;
+        };
+        if transcript.is_empty() {
+            continue;
+        }
         context.push_str(&format!(
-            "Site/system: {}; channel plan: {}; calls: {}; severity: {}/5; excerpts: {}\n",
-            thread.system_name,
-            thread.talkgroup_label,
-            thread.call_count,
-            thread.severity,
-            thread.excerpts.join(" | ")
+            "[{}] {} · {:.4} MHz · {}: {}\n",
+            call.started_at.to_rfc3339(),
+            call.system_name,
+            call.frequency_hz as f64 / 1_000_000.0,
+            call.talkgroup_label,
+            transcript
         ));
-        if context.len() > 6000 {
+        if context.len() >= 6000 {
             context.truncate(6000);
             break;
         }
     }
-    if context.is_empty() {
-        return (
-            Some(format!(
-                "No radio activity was recorded in the last {hours} hours."
-            )),
-            "generated".into(),
-        );
-    }
-    let prompt = format!(
-        "Write a concise factual radio-operations brief (maximum 120 words) for the last {hours} hours. Group related activity, mention only details supported by the excerpts, call out notable incidents and locations, and say when there is not enough information. Do not invent names, addresses, or outcomes.\n\n{context}"
-    );
-    match crate::providers::summarize(
-        &crate::providers::http_client(),
-        &settings,
-        &context,
-        &prompt,
-    )
-    .await
-    {
-        Ok(text) if !text.trim().is_empty() => (Some(text), "generated".into()),
-        Ok(_) => (None, "provider-invalid-response".into()),
-        Err(_) => (None, "provider-unavailable".into()),
-    }
+    context
 }
 
 async fn operations_summary(
@@ -1750,12 +1815,13 @@ async fn operations_summary(
     let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours as i64);
     let calls: Vec<Call> = state
         .calls
-        .read()
-        .expect("calls lock poisoned")
+        .try_read()
+        .map(|calls| calls
         .iter()
         .filter(|call| call.started_at >= cutoff)
         .cloned()
-        .collect();
+        .collect())
+        .unwrap_or_default();
     let mut grouped: std::collections::HashMap<String, IncidentThread> =
         std::collections::HashMap::new();
     for call in &calls {
@@ -1778,7 +1844,7 @@ async fn operations_summary(
                 category: call.category.clone(),
                 severity: activity_severity(
                     &call.category,
-                    call.transcript.as_deref().or(call.summary.as_deref()),
+                    call.transcript.as_deref(),
                 ),
                 activity_score: 0,
                 call_count: 0,
@@ -1796,7 +1862,7 @@ async fn operations_summary(
             .max(call.ended_at.unwrap_or(call.started_at));
         entry.severity = entry.severity.max(activity_severity(
             &call.category,
-            call.transcript.as_deref().or(call.summary.as_deref()),
+            call.transcript.as_deref(),
         ));
         if let Some(radio_id) = call.source_radio_id {
             if !entry.radio_ids.contains(&radio_id) {
@@ -1819,7 +1885,7 @@ async fn operations_summary(
                 }
             }
         }
-        if let Some(text) = call.summary.as_ref().or(call.transcript.as_ref()) {
+        if let Some(text) = call.transcript.as_ref() {
             if !text.trim().is_empty() && entry.excerpts.len() < 3 {
                 entry.excerpts.push(text.trim().to_string());
             }
@@ -1849,8 +1915,15 @@ async fn operations_summary(
             hours
         )
     };
-    let (ai_summary, ai_summary_status) =
-        generate_operations_ai_summary(&state, hours, &threads).await;
+    // Never let a slow or unreachable summary provider hold the entire brief
+    // request open. The structured incident data should return promptly even
+    // when AI is unavailable.
+    let (ai_summary, ai_summary_status) = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        generate_operations_ai_summary(&state, hours, &calls),
+    )
+    .await
+    .unwrap_or((None, "provider-timeout".into()));
     Json(OperationsSummary {
         hours,
         generated_at: chrono::Utc::now(),
@@ -1970,6 +2043,45 @@ async fn confirm_session_location(
     StatusCode::NO_CONTENT.into_response()
 }
 
+#[derive(Deserialize)]
+struct TranscriptOverrideRequest {
+    transcript: String,
+}
+
+async fn update_call_transcript(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<TranscriptOverrideRequest>,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let transcript = request.transcript.trim();
+    if transcript.is_empty() || transcript.len() > 20_000 {
+        return (StatusCode::BAD_REQUEST, "Transcript must contain 1-20000 characters").into_response();
+    }
+    match state.override_call_transcript(id, transcript.to_string()) {
+        Some(call) => Json(call).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn retranscribe_call(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<uuid::Uuid>,
+    headers: HeaderMap,
+) -> Response {
+    if !admin_allowed(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(call) = state.calls.read().ok().and_then(|calls| calls.iter().find(|call| call.id == id).cloned()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    state.enqueue_processing(call);
+    Json(serde_json::json!({"status":"queued", "callId": id})).into_response()
+}
+
 async fn update_call_location(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
@@ -1996,6 +2108,8 @@ async fn update_call_location(
 #[serde(rename_all = "camelCase")]
 struct PurgeCallsRequest {
     #[serde(default)]
+    call_ids: Option<Vec<uuid::Uuid>>,
+    #[serde(default)]
     hours: Option<u32>,
     #[serde(default)]
     category: Option<String>,
@@ -2003,6 +2117,8 @@ struct PurgeCallsRequest {
     talkgroup_id: Option<u32>,
     #[serde(default)]
     system_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    delete_audio: bool,
 }
 
 #[derive(Serialize)]
@@ -2033,7 +2149,12 @@ async fn purge_calls(
         let retained: Vec<Call> = calls
             .drain(..)
             .filter(|call| {
-                let matches = cutoff.is_none_or(|cutoff| call.started_at >= cutoff)
+                // Active calls are owned by the decoder and must be finalized
+                // before they can be removed. This protects an in-flight
+                // recording even when a client bypasses the UI guard.
+                let matches = call.state != trunkscope_domain::CallState::Active
+                    && request.call_ids.as_ref().is_none_or(|ids| ids.contains(&call.id))
+                    && cutoff.is_none_or(|cutoff| call.started_at >= cutoff)
                     && category
                         .as_ref()
                         .is_none_or(|value| call.category.to_ascii_lowercase().contains(value))
@@ -2055,6 +2176,24 @@ async fn purge_calls(
     }
     let count = removed.len();
     if count > 0 {
+        if request.delete_audio {
+            let root = std::path::PathBuf::from(
+                std::env::var("TRUNKSCOPE_CALLS_PATH")
+                    .unwrap_or_else(|_| "/var/lib/trunkscope/calls".into()),
+            );
+            for call in &removed {
+                let Some(asset) = call.audio.as_ref() else {
+                    continue;
+                };
+                let Some(path) = resolve_audio_object_key(&root, &asset.object_key) else {
+                    continue;
+                };
+                // A recording delete is intentionally best-effort: its archive
+                // metadata has already been removed, and a missing file should
+                // never make the request fail or affect a path outside calls.
+                let _ = std::fs::remove_file(path);
+            }
+        }
         crate::sqlite::delete_calls(&removed.iter().map(|call| call.id).collect::<Vec<_>>());
         *state.purge_undo.write().expect("purge undo lock poisoned") = Some(removed);
     }
@@ -2133,16 +2272,17 @@ async fn operations_ask(
     let mut context = String::new();
     let mut cited = Vec::new();
     for call in calls.iter().rev().take(40) {
+        let transcript = call.transcript.as_deref().map(str::trim).unwrap_or_default();
+        if transcript.is_empty() {
+            continue;
+        }
         cited.push(call.id);
         context.push_str(&format!(
             "- {} {} {}: {}\n",
             call.started_at.to_rfc3339(),
             call.talkgroup_label,
             call.category,
-            call.transcript
-                .as_deref()
-                .or(call.summary.as_deref())
-                .unwrap_or("(no transcript)")
+            transcript
         ));
         if context.len() > 8000 {
             break;
@@ -2169,6 +2309,14 @@ async fn operations_ask(
         })
         .into_response();
     };
+    if context.is_empty() {
+        return Json(OperationsAskResponse {
+            answer: "No transcriptions are available in the requested window.".into(),
+            cited_call_ids: cited,
+            status: "no-transcripts".into(),
+        })
+        .into_response();
+    }
     let prompt = format!(
         "You are a radio operations assistant. Answer the operator question using only the call history below. Cite talkgroups and times when possible. If the history does not support an answer, say so.\n\nQuestion: {question}\n\nHistory:\n{context}"
     );
@@ -3193,6 +3341,125 @@ async fn settings(State(state): State<Arc<AppState>>) -> Json<AppSettings> {
     )
 }
 
+async fn call_enrichment(State(state): State<Arc<AppState>>, Path(id): Path<uuid::Uuid>) -> Response {
+    let Some(call) = state.calls.read().ok().and_then(|calls| calls.iter().find(|call| call.id == id).cloned()) else { return StatusCode::NOT_FOUND.into_response(); };
+    (StatusCode::OK, Json(call.enrichment)).into_response()
+}
+
+async fn retry_call_enrichment(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, task)): Path<(uuid::Uuid, String)>,
+) -> Response {
+    if !admin_allowed(&state, &headers) { return StatusCode::UNAUTHORIZED.into_response(); }
+    if !["unit-extraction", "event-tagging", "address-normalization", "correlation", "map-placement"].contains(&task.as_str()) {
+        return (StatusCode::BAD_REQUEST, "This task does not support transcript enrichment retries").into_response();
+    }
+    let call = state.calls.read().ok().and_then(|calls| calls.iter().find(|call| call.id == id).cloned());
+    let Some(call) = call else { return StatusCode::NOT_FOUND.into_response(); };
+    if !crate::enrichment::eligible(&call) {
+        return (StatusCode::CONFLICT, "Enrichment requires a completed, unencrypted call with a transcript").into_response();
+    }
+    state.set_call_enrichment(id, &task, serde_json::json!({ "status": "pending", "confidence": 0.0, "evidence": [], "retryRequested": true }));
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "callId": id, "task": task, "status": "pending" }))).into_response()
+}
+
+async fn ai_tasks(State(state): State<Arc<AppState>>) -> Json<std::collections::HashMap<String, AiTaskSettings>> {
+    Json(state.settings.read().expect("settings lock poisoned").ai_tasks.clone())
+}
+
+async fn save_ai_tasks(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(tasks): Json<std::collections::HashMap<String, AiTaskSettings>>,
+) -> Response {
+    if !admin_allowed(&state, &headers) { return StatusCode::UNAUTHORIZED.into_response(); }
+    if tasks.values().any(|task| task.interval_minutes == 0 || task.max_batch == 0 || !(0.0..=1.0).contains(&task.confidence_threshold)) {
+        return (StatusCode::BAD_REQUEST, "invalid AI task cadence, batch size, or confidence threshold").into_response();
+    }
+    state.settings.write().expect("settings lock poisoned").ai_tasks = tasks.clone();
+    let current = state.settings.read().expect("settings lock poisoned").clone();
+    if let Ok(serialized) = serde_json::to_vec_pretty(&current) { let _ = crate::state::atomic_write(&state.settings_path, &serialized); }
+    if let Some(sender) = state.persistence.read().expect("persistence lock poisoned").as_ref() { let _ = sender.send(crate::persistence::Command::Settings(current)); }
+    (StatusCode::OK, Json(tasks)).into_response()
+}
+
+async fn ai_tasks_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let tasks = state.settings.read().expect("settings lock poisoned").ai_tasks.clone();
+    Json(serde_json::json!({ "tasks": tasks, "queueDepth": state.processing_queue_depth.load(Ordering::Relaxed), "workerStatus": state.ai_worker_status.read().expect("AI status lock poisoned").clone() }))
+}
+
+async fn ai_model_capabilities(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    let summary_url = settings.summary_url.as_str();
+    let local = settings.summary_provider.eq_ignore_ascii_case("ollama")
+        || summary_url.contains("127.0.0.1") || summary_url.contains("localhost");
+    Json(serde_json::json!({"models":[{"model":settings.summary_model,"provider":settings.summary_provider,"capabilities":["json-extraction","reasoning","batch-friendly"],"local":local},{"model":settings.transcribe_model,"provider":settings.transcribe_provider,"capabilities":["transcription"],"local":settings.transcribe_url.contains("127.0.0.1") || settings.transcribe_url.contains("localhost")}]}))
+}
+
+#[derive(serde::Deserialize)]
+struct PromptTestRequest { task: String, prompt: String, transcript: Option<String> }
+
+async fn ai_prompt_test(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(input): Json<PromptTestRequest>) -> Response {
+    if !admin_allowed(&state, &headers) { return StatusCode::UNAUTHORIZED.into_response(); }
+    if input.prompt.trim().is_empty() { return (StatusCode::BAD_REQUEST, "prompt is required").into_response(); }
+    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    let mut task_settings = settings.clone();
+    if let Some(config) = settings.ai_tasks.get(&input.task) { if !config.provider.is_empty() { task_settings.summary_provider = config.provider.clone(); } if !config.model.is_empty() { task_settings.summary_model = config.model.clone(); } }
+    let transcript = input.transcript.unwrap_or_else(|| "Engine 4 respond to 123 Main Street for a smoke alarm.".to_string());
+    let prompt = crate::enrichment::task_prompt(&input.task, Some(&input.prompt), &transcript);
+    let client = crate::providers::http_client();
+    match tokio::time::timeout(std::time::Duration::from_secs(30), crate::providers::summarize(&client, &task_settings, &transcript, &prompt)).await {
+        Ok(Ok(text)) => (StatusCode::OK, Json(serde_json::json!({"task":input.task,"raw":text,"parsed":serde_json::from_str::<serde_json::Value>(&text).ok(),"model":task_settings.summary_model}))).into_response(),
+        Ok(Err(error)) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error":error.to_string()}))).into_response(),
+        Err(_) => (StatusCode::GATEWAY_TIMEOUT, "provider-timeout").into_response(),
+    }
+}
+
+async fn ai_workload(State(state): State<Arc<AppState>>, Query(query): Query<std::collections::HashMap<String, String>>) -> Json<serde_json::Value> {
+    let hours = query.get("hours").and_then(|value| value.parse::<i64>().ok()).unwrap_or(4).clamp(1, 24);
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours);
+    let calls: Vec<_> = state.calls.read().ok().map(|calls| calls.iter().filter(|call| call.started_at >= cutoff).cloned().collect()).unwrap_or_default();
+    let mut categories = std::collections::HashMap::<String, usize>::new();
+    let mut frequencies = std::collections::HashMap::<u64, usize>::new();
+    for call in &calls { *categories.entry(call.category.clone()).or_default() += 1; *frequencies.entry(call.frequency_hz).or_default() += 1; }
+    let busiest = frequencies.into_iter().max_by_key(|(_, count)| *count).map(|(frequency, count)| serde_json::json!({"frequencyHz":frequency,"calls":count}));
+    Json(serde_json::json!({"hours":hours,"callCount":calls.len(),"completeCalls":calls.iter().filter(|call| matches!(call.state, trunkscope_domain::CallState::Complete)).count(),"activeCalls":calls.iter().filter(|call| matches!(call.state, trunkscope_domain::CallState::Active)).count(),"categories":categories,"busiestChannel":busiest}))
+}
+
+async fn run_ai_task(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(task): Path<String>,
+) -> Response {
+    if !admin_allowed(&state, &headers) { return StatusCode::UNAUTHORIZED.into_response(); }
+    let allowed = ["unit-extraction", "tone-classification", "event-tagging", "address-normalization", "correlation", "map-placement", "workload-metrics"];
+    if !allowed.contains(&task.as_str()) { return (StatusCode::BAD_REQUEST, "unknown AI task").into_response(); }
+    if task == "tone-classification" {
+        return (StatusCode::UNPROCESSABLE_ENTITY, "Audio tone analysis is not available; transcript text cannot identify dispatch tones").into_response();
+    }
+    let settings = state.settings.read().expect("settings lock poisoned").clone();
+    let mut task_settings = settings.clone();
+    if let Some(config) = settings.ai_tasks.get(&task) {
+        if !config.provider.is_empty() { task_settings.summary_provider = config.provider.clone(); }
+        if !config.model.is_empty() { task_settings.summary_model = config.model.clone(); }
+    }
+    let max_batch = settings.ai_tasks.get(&task).map(|config| config.max_batch.max(1) as usize).unwrap_or(32);
+    let calls: Vec<_> = state.calls.read().ok().map(|calls| calls.iter().rev().filter(|call| crate::enrichment::eligible(call)).take(max_batch).cloned().collect()).unwrap_or_default();
+    let client = crate::providers::http_client();
+    for call in &calls {
+        let transcript = call.transcript.as_deref().unwrap_or_default();
+        let prompt = crate::enrichment::task_prompt(&task, settings.ai_tasks.get(&task).map(|config| config.system_prompt.as_str()), transcript);
+        let result = match tokio::time::timeout(std::time::Duration::from_secs(30), crate::providers::summarize(&client, &task_settings, transcript, &prompt)).await {
+            Ok(Ok(text)) => crate::enrichment::validated_result(&text, &task_settings.summary_model, transcript),
+            Ok(Err(error)) => serde_json::json!({ "status": "failed", "error": error.to_string() }),
+            Err(_) => serde_json::json!({ "status": "failed", "error": "provider-timeout" }),
+        };
+        state.set_call_enrichment(call.id, &task, result);
+    }
+    (StatusCode::OK, Json(serde_json::json!({ "task": task, "processed": calls.len() }))).into_response()
+}
+
 async fn save_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3290,6 +3557,8 @@ async fn save_system(
     let is_p25 = profile.protocol.starts_with("p25");
     let is_dmr = profile.protocol == "dmr";
     let is_trunked_profile = is_p25 || is_dmr;
+    let is_conventional_p25 = profile.protocol == "conventional-p25";
+    let is_conventional_dmr = profile.protocol == "conventional-dmr";
     if profile.name.trim().is_empty()
         || (is_trunked_profile && profile.control_channel_hz.unwrap_or_default() == 0)
         || (is_p25 && profile.nac.is_some_and(|nac| nac > 0xFFF))
@@ -3297,7 +3566,24 @@ async fn save_system(
     {
         return (StatusCode::BAD_REQUEST, Json(profile));
     }
-    if !is_trunked_profile {
+    if is_conventional_p25 {
+        if !matches!(profile.modulation.as_deref(), None | Some("fsk4" | "qpsk")) {
+            return (StatusCode::BAD_REQUEST, Json(profile));
+        }
+        profile.control_channel_hz = None;
+        profile.control_channels_hz.clear();
+        profile.tone = None;
+        profile.nac = None;
+    } else if is_conventional_dmr {
+        let valid_modulation = matches!(profile.modulation.as_deref(), None | Some("fsk4"));
+        let valid_color = profile.color_code.is_none_or(|value| value <= 15);
+        let valid_slot = profile.time_slot.is_none_or(|value| (1..=2).contains(&value));
+        if !valid_modulation || !valid_color || !valid_slot { return (StatusCode::BAD_REQUEST, Json(profile)); }
+        profile.control_channel_hz = None;
+        profile.control_channels_hz.clear();
+        profile.tone = None;
+        profile.nac = None;
+    } else if !is_trunked_profile {
         let bandwidth_ok = matches!(profile.bandwidth_hz, Some(6250 | 12500 | 25000));
         let tone_ok = profile
             .tone
@@ -3486,7 +3772,44 @@ fn internal_error() -> impl IntoResponse {
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
+    use trunkscope_domain::{CallState, EncryptionState};
     use tower::ServiceExt;
+
+    #[test]
+    fn operations_context_uses_only_recent_transcripts() {
+        let now = chrono::Utc::now();
+        let base = || Call {
+            id: uuid::Uuid::new_v4(),
+            system_id: uuid::Uuid::new_v4(),
+            system_name: "Test system".into(),
+            site_id: uuid::Uuid::new_v4(),
+            talkgroup_id: 1,
+            talkgroup_label: "Dispatch".into(),
+            category: "Public safety".into(),
+            frequency_hz: 154_445_000,
+            tdma_slot: None,
+            source_radio_id: None,
+            started_at: now,
+            ended_at: None,
+            state: CallState::Complete,
+            encryption: EncryptionState::Clear,
+            signal_dbfs: -40.0,
+            transcript: None,
+            summary: Some("must never reach the operations prompt".into()),
+            location: None,
+            audio: None,
+            enrichment: serde_json::json!({}),
+        };
+        let mut old = base();
+        old.started_at = now - chrono::Duration::hours(5);
+        old.transcript = Some("old transcript".into());
+        let mut recent = base();
+        recent.transcript = Some("recent transcript".into());
+        let context = transcript_context(&[old, recent], 4);
+        assert!(context.contains("recent transcript"));
+        assert!(!context.contains("old transcript"));
+        assert!(!context.contains("must never reach"));
+    }
 
     fn test_state() -> Arc<AppState> {
         let state = Arc::new(AppState::new());
@@ -3587,6 +3910,8 @@ mod tests {
         state.systems.write().unwrap().push(SystemProfile {
             id: uuid::Uuid::new_v4(),
             name: "VHF P25".into(),
+            enabled: true,
+            color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
             protocol: "p25".into(),
             control_channel_hz: Some(152_112_500),
             control_channels_hz: vec![152_112_500, 152_217_500],
@@ -3626,6 +3951,8 @@ mod tests {
         state.systems.write().unwrap().push(SystemProfile {
             id: uuid::Uuid::new_v4(),
             name: "VHF P25".into(),
+            enabled: true,
+            color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
             protocol: "p25".into(),
             control_channel_hz: Some(152_112_500),
             control_channels_hz: vec![],
@@ -3652,6 +3979,7 @@ mod tests {
             center_frequency_hz: Some(154_000_000),
             sample_rate_hz: Some(4_000_000),
             gain_db: Some(40.0),
+            gain_settings: serde_json::json!({}),
             ppm: 0.0,
             enabled: true,
             role: ReceiverRole::General,
@@ -3769,6 +4097,8 @@ mod tests {
         state.systems.write().unwrap().push(SystemProfile {
             id: uuid::Uuid::new_v4(),
             name: "Metro P25".into(),
+            enabled: true,
+            color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
             protocol: "p25".into(),
             control_channel_hz: Some(851_012_500),
             control_channels_hz: vec![],
@@ -3815,6 +4145,7 @@ mod tests {
                 center_frequency_hz: Some(152_112_500),
                 sample_rate_hz: Some(2_400_000),
                 gain_db: Some(30.0),
+                gain_settings: serde_json::json!({}),
                 ppm: 0.0,
                 enabled: true,
                 role: ReceiverRole::P25,
@@ -3841,6 +4172,7 @@ mod tests {
                 center_frequency_hz: Some(851_012_500),
                 sample_rate_hz: Some(6_000_000),
                 gain_db: Some(20.0),
+                gain_settings: serde_json::json!({}),
                 ppm: 0.0,
                 enabled: true,
                 role: ReceiverRole::General,
@@ -3863,6 +4195,8 @@ mod tests {
             SystemProfile {
                 id: uuid::Uuid::new_v4(),
                 name: "VHF P25".into(),
+                enabled: true,
+                color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
                 protocol: "p25".into(),
                 control_channel_hz: Some(152_112_500),
                 control_channels_hz: vec![],
@@ -3883,6 +4217,8 @@ mod tests {
             SystemProfile {
                 id: uuid::Uuid::new_v4(),
                 name: "UHF P25".into(),
+                enabled: true,
+                color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
                 protocol: "p25".into(),
                 control_channel_hz: Some(851_012_500),
                 control_channels_hz: vec![],
@@ -3915,6 +4251,8 @@ mod tests {
         state.systems.write().unwrap().push(SystemProfile {
             id: uuid::Uuid::new_v4(),
             name: "Jackson County Fire".into(),
+            enabled: true,
+            color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
             protocol: "analog-fm".into(),
             control_channel_hz: None,
             control_channels_hz: vec![],
@@ -4139,6 +4477,7 @@ mod tests {
                 summary: None,
                 location: None,
                 audio: None,
+                enrichment: serde_json::json!({}),
             });
         let response = router(Arc::clone(&state))
             .oneshot(

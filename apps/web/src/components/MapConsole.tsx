@@ -3,7 +3,7 @@ import type { FeatureCollection, Feature, Point } from "geojson";
 import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type Popup as MapLibrePopup } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Call } from "../types";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { CallPopup } from "./CallPopup";
 
 export type MapStyleMode = "dark" | "satellite" | "streets";
@@ -72,9 +72,15 @@ export function MapConsole({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const popupRef = useRef<MapLibrePopup | null>(null);
+  const popupRootRef = useRef<Root | null>(null);
+  const popupCallRef = useRef<string | null>(null);
+  const focusedLocationRef = useRef("");
+  const viewportRef = useRef<{ home: string; center: [number, number]; zoom: number } | null>(null);
   const geoJsonRef = useRef<() => FeatureCollection<Point>>(() => ({ type: "FeatureCollection", features: [] }));
   const [styleMode, setStyleMode] = useState<MapStyleMode>("dark");
   const [heatmapEnabled, setHeatmapEnabled] = useState(false);
+  const latest = useRef({ calls, onSelectCall, heatmapEnabled });
+  latest.current = { calls, onSelectCall, heatmapEnabled };
   const buildGeoJson = useCallback((): FeatureCollection<Point> => {
     const locatedCalls = calls.filter((c) => Boolean(c.location));
     const features: Feature<Point>[] = locatedCalls.map((call) => {
@@ -118,6 +124,14 @@ export function MapConsole({
   const showCallPopup = useCallback((call: Call, coordinates: [number, number]) => {
     if (!mapRef.current) return;
 
+    if (popupRef.current && popupRootRef.current && popupCallRef.current === call.id) {
+      const popup = popupRef.current;
+      popup.setLngLat(coordinates);
+      popupRootRef.current.render(<CallPopup call={call} volume={volume} isAdmin={isAdmin}
+        onLocationUpdated={onCallUpdated} onOpenTalkgroup={onOpenTalkgroup} onClose={() => popup.remove()} />);
+      return;
+    }
+
     if (popupRef.current) {
       popupRef.current.remove();
     }
@@ -147,22 +161,36 @@ export function MapConsole({
       />
     );
 
+    popup.on("close", () => {
+      // MapLibre removes its DOM outside React's lifecycle.
+      queueMicrotask(() => root.unmount());
+      if (popupRef.current === popup) {
+        popupRef.current = null;
+        popupRootRef.current = null;
+        popupCallRef.current = null;
+      }
+    });
+
     popupRef.current = popup;
+    popupRootRef.current = root;
+    popupCallRef.current = call.id;
   }, [volume, onOpenTalkgroup, isAdmin, onCallUpdated]);
 
   // Initialize Map
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
+    const viewport = viewportRef.current?.home === homeCenter.join(",") ? viewportRef.current : null;
     const map = new maplibregl.Map({
       container: containerRef.current,
-      center: homeCenter,
-      zoom: 12,
+      center: viewport?.center ?? homeCenter,
+      zoom: viewport?.zoom ?? 12,
       attributionControl: false,
       style: buildMapStyle(styleMode),
     });
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
 
     map.on("load", () => {
       // Add GeoJSON source with clustering
@@ -189,7 +217,7 @@ export function MapConsole({
           "heatmap-opacity": 0.65,
         },
         layout: {
-          visibility: "none",
+          visibility: latest.current.heatmapEnabled ? "visible" : "none",
         },
       });
 
@@ -287,10 +315,9 @@ export function MapConsole({
         const feature = e.features?.[0];
         if (!feature) return;
         const id = feature.properties?.id;
-        const call = calls.find((c) => c.id === id);
+        const call = latest.current.calls.find((c) => c.id === id);
         if (call && call.location) {
-          onSelectCall(call);
-          showCallPopup(call, [call.location.longitude, call.location.latitude]);
+          latest.current.onSelectCall(call);
         }
       });
 
@@ -304,6 +331,9 @@ export function MapConsole({
     mapRef.current = map;
 
     return () => {
+      const center = map.getCenter();
+      viewportRef.current = { home: homeCenter.join(","), center: [center.lng, center.lat], zoom: map.getZoom() };
+      popupRef.current?.remove();
       map.remove();
       mapRef.current = null;
     };
@@ -337,23 +367,23 @@ export function MapConsole({
       selectedCall.location.latitude,
     ];
 
-    map.flyTo({
-      center: coords,
-      zoom: Math.max(map.getZoom(), 13.5),
-      speed: 1.4,
-      essential: true,
-    });
+    const focus = `${selectedCall.id}:${coords.join(",")}`;
+    if (focusedLocationRef.current !== focus) {
+      focusedLocationRef.current = focus;
+      map.flyTo({
+        center: coords,
+        zoom: Math.max(map.getZoom(), 13.5),
+        speed: 1.4,
+        essential: true,
+      });
+    }
 
     showCallPopup(selectedCall, coords);
-  }, [selectedCall, showCallPopup]);
+  }, [selectedCall, showCallPopup, styleMode, homeCenter]);
 
   const handleLayerSwitch = (mode: MapStyleMode) => {
     if (mode === styleMode || !mapRef.current) return;
-    // The map init effect depends on styleMode, so it rebuilds the map (and
-    // all incident layers) from buildMapStyle; this setStyle only avoids a
-    // flash of the old basemap between teardown and re-creation.
     setStyleMode(mode);
-    mapRef.current.setStyle(buildMapStyle(mode));
   };
 
   const handleResetHome = () => {

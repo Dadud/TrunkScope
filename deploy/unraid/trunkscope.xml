@@ -14,7 +14,7 @@
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/Dadud/TrunkScope/main/deploy/unraid/trunkscope.xml</TemplateURL>
   <Icon/>
-  <ExtraParams>--shm-size=256m --ipc=host</ExtraParams>
+  <ExtraParams>--shm-size=256m --ipc=private</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>

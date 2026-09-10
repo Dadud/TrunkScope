@@ -1,14 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { askOperations, getOperationsSummary, type OperationsSummary as SummaryData } from "../api";
 
 interface OperationsDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   refreshMinutes?: number;
+  defaultLookbackHours?: number;
 }
 
-export function OperationsDrawer({ isOpen, onClose, refreshMinutes = 15 }: OperationsDrawerProps) {
-  const [hours, setHours] = useState<number>(4);
+export function OperationsDrawer({ isOpen, onClose, refreshMinutes = 15, defaultLookbackHours = 4 }: OperationsDrawerProps) {
+  const [hours, setHours] = useState<number>(defaultLookbackHours);
+  useEffect(() => setHours(defaultLookbackHours), [defaultLookbackHours]);
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -17,25 +19,44 @@ export function OperationsDrawer({ isOpen, onClose, refreshMinutes = 15 }: Opera
   const [askAnswer, setAskAnswer] = useState("");
   const [askStatus, setAskStatus] = useState("");
   const [askLoading, setAskLoading] = useState(false);
+  const requestGeneration = useRef(0);
+  const requestAbort = useRef<AbortController | null>(null);
+  const askAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    askAbort.current?.abort();
+    askAbort.current = null;
+    setAskLoading(false);
+  }, [isOpen, hours]);
 
   const fetchSummary = async (h: number) => {
+    const generation = ++requestGeneration.current;
+    requestAbort.current?.abort();
+    const controller = new AbortController();
+    requestAbort.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 75_000);
     setLoading(true);
+    setSummary(null);
     setError(null);
     try {
-      const data = await getOperationsSummary(h);
-      setSummary(data);
+      const data = await getOperationsSummary(h, controller.signal);
+      if (generation === requestGeneration.current) setSummary(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load operations brief");
+      if (generation === requestGeneration.current) setError(err instanceof DOMException && err.name === "AbortError" ? "Brief timed out while waiting for the summary provider. Structured results may still be available after retrying." : err instanceof Error ? err.message : "Failed to load operations brief");
     } finally {
-      setLoading(false);
+      if (generation === requestGeneration.current) setLoading(false);
+      window.clearTimeout(timeout);
     }
   };
 
   useEffect(() => {
     if (!isOpen) return;
     fetchSummary(hours);
-    const interval = setInterval(() => fetchSummary(hours), refreshMinutes * 60 * 1000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => fetchSummary(hours), Math.max(1, refreshMinutes) * 60 * 1000);
+    return () => {
+      clearInterval(interval);
+      requestGeneration.current++;
+      requestAbort.current?.abort();
+    };
   }, [isOpen, hours, refreshMinutes]);
 
   if (!isOpen) return null;
@@ -61,14 +82,13 @@ export function OperationsDrawer({ isOpen, onClose, refreshMinutes = 15 }: Opera
         {drawerTab === "brief" && (
         <>
         <div className="ops-time-tabs">
-          {[1, 4, 12, 24].map((h) => (
+              {[1, 4, 12, 24].map((h) => (
             <button
               key={h}
               type="button"
               className={`time-tab ${hours === h ? "active" : ""}`}
               onClick={() => {
                 setHours(h);
-                fetchSummary(h);
               }}
             >
               {h}H WINDOW
@@ -77,7 +97,7 @@ export function OperationsDrawer({ isOpen, onClose, refreshMinutes = 15 }: Opera
         </div>
 
         {loading && <div className="ops-loading">Synthesizing operations brief…</div>}
-        {error && <div className="ops-error">{error}</div>}
+        {error && <div className="ops-error" role="alert">{error}<button type="button" onClick={() => fetchSummary(hours)}>Retry brief</button></div>}
 
         {summary && !loading && (
           <div className="ops-content">
@@ -178,15 +198,23 @@ export function OperationsDrawer({ isOpen, onClose, refreshMinutes = 15 }: Opera
                 onClick={async () => {
                   setAskLoading(true);
                   setAskStatus("");
+                  setAskAnswer("");
+                  const controller = new AbortController();
+                  askAbort.current?.abort();
+                  askAbort.current = controller;
+                  const timeout = window.setTimeout(() => controller.abort(), 75_000);
                   try {
-                    const response = await askOperations(question, hours);
+                    const response = await askOperations(question.trim(), hours, controller.signal);
+                    if (askAbort.current !== controller) return;
                     setAskAnswer(response.answer);
                     setAskStatus(response.status);
                   } catch (err) {
-                    setAskAnswer(err instanceof Error ? err.message : "Ask failed");
+                    if (askAbort.current !== controller) return;
+                    setAskAnswer(controller.signal.aborted ? "The request timed out. Please try again." : err instanceof Error ? err.message : "Ask failed");
                     setAskStatus("error");
                   } finally {
-                    setAskLoading(false);
+                    window.clearTimeout(timeout);
+                    if (askAbort.current === controller) setAskLoading(false);
                   }
                 }}
               >

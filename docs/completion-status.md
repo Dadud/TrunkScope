@@ -8,6 +8,7 @@ stand in for an RF acceptance test.
 | Gate | Status | Evidence |
 | --- | --- | --- |
 | Docker/Unraid deployment | PASS | `docker compose config --quiet`; live rebuild from the complete checkout succeeded on Unraid; `/api/v1/health/ready` returned 200 after restart |
+| SDRplay RSP1B startup stability | PASS (software/runtime smoke test) | Live Unraid appliance uses a valid 6 MHz plan; SDRplay API is reset before decoder open; control-plane, decoder, and vendor API remained RUNNING for the monitored stability window with no sample-rate rejection, unavailable-device error, or source termination |
 | Software-observable hardware acceptance | PASS | `scripts/verified-hardware-acceptance.py` against `192.168.1.4:18088` passed readiness, admin session, non-simulated capture, decoder, capabilities, stream, ingestion, recording, and session checks; local RSP1B is now the persisted source |
 | Conventional FM hardware activity | PASS (signal observed) | Acceptance harness observed 45 archived clear recordings across both configured frequencies (`151062500` and `154445000` Hz); tone-match/mismatch isolation remains a separate RF test |
 | Real capture (not simulator) | PASS | live `/api/v1/diagnostics` reports `simulated: false` and delegated hardware capture |

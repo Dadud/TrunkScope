@@ -197,6 +197,9 @@ pub fn soapy_driver_arg(driver: ReceiverDriver) -> &'static str {
 pub fn default_gain_settings(driver: ReceiverDriver, gain_db: f32) -> Value {
     let gain = gain_db.round() as i64;
     match driver {
+        // SDRplay exposes gain reduction, not conventional gain: lower IFGR
+        // means more gain. RFGR is a discrete LNA state, not dB; keep the
+        // conservative mid-range preset until per-device control is exposed.
         ReceiverDriver::Sdrplay => json!({"IFGR": gain.max(20).min(59), "RFGR": 4}),
         ReceiverDriver::RtlSdr => json!({"LNA": gain.max(0).min(49), "TUNER": gain.max(0).min(49)}),
         ReceiverDriver::Airspy => {

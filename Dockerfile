@@ -8,7 +8,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
 RUN pnpm install --frozen-lockfile --filter @trunkscope/web...
 COPY apps/web apps/web
-RUN pnpm --filter @trunkscope/web build
+RUN pnpm --filter @trunkscope/web test && pnpm --filter @trunkscope/web build
 
 FROM rust:1.88-bookworm AS control-plane-build
 WORKDIR /source
@@ -23,6 +23,7 @@ RUN mkdir -p crates/domain/src apps/control-plane/src \
 COPY crates/domain/src crates/domain/src
 COPY apps/control-plane/src apps/control-plane/src
 RUN touch crates/domain/src/lib.rs apps/control-plane/src/main.rs \
+    && cargo test --workspace \
     && cargo build --release -p trunkscope-control-plane
 
 FROM ubuntu:24.04 AS radiod-build

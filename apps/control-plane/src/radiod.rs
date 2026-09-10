@@ -70,7 +70,7 @@ impl RadioConfig {
                 .iter()
                 .find(|profile| profile.protocol == "analog-fm")
                 .and_then(|profile| profile.squelch_db)
-                .unwrap_or(-60.0),
+                .unwrap_or(-70.0),
         })
     }
 }
@@ -264,6 +264,7 @@ fn initial_receiver(id: Uuid, config: &RadioConfig) -> Receiver {
         center_frequency_hz: Some(config.frequency_hz),
         sample_rate_hz: Some(config.sample_rate_hz),
         gain_db: config.gain_db,
+        gain_settings: serde_json::json!({}),
         ppm: config.ppm,
         enabled: true,
         role: ReceiverRole::General,
@@ -490,6 +491,7 @@ fn apply_event(state: &AppState, receiver_id: Uuid, event: RadioEvent) {
                     content_type: "audio/wav".into(),
                     duration_ms,
                 }),
+                enrichment: serde_json::json!({}),
             };
             state.upsert_call(call.clone(), CallEvent::Ended(call.clone()));
             state.enqueue_processing(call);
@@ -576,6 +578,8 @@ mod tests {
             .push(crate::state::SystemProfile {
                 id: Uuid::new_v4(),
                 name: "Jackson FM".into(),
+                enabled: true,
+                color_code: None, time_slot: None, contact_id: None, counties: Vec::new(), townships: Vec::new(), municipalities: Vec::new(), local_context: None,
                 protocol: "analog-fm".into(),
                 control_channel_hz: None,
                 control_channels_hz: Vec::new(),

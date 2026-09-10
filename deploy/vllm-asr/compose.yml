@@ -9,7 +9,10 @@
 
 services:
   vllm-asr:
-    image: vllm/vllm-openai:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trunkscope-vllm-asr:audio
     container_name: trunkscope-vllm-asr
     restart: unless-stopped
     ports:

@@ -22,18 +22,34 @@ if [ ! -f "$CONFIG" ]; then
   echo "decoder config not yet written at $CONFIG"
 fi
 
+# The SDRplay vendor service can retain libusb handles after a decoder exit.
+# Reset it before opening the device so a new Trunk Recorder instance never
+# races a stale API session (the source otherwise dies with submit_iso_transfer
+# errno=12 or reports no available RSP devices).
+if grep -q 'driver=sdrplay' "$CONFIG" 2>/dev/null && command -v supervisorctl >/dev/null 2>&1; then
+  supervisorctl stop sdrplay-api >/dev/null 2>&1 || true
+  sleep 1
+  supervisorctl start sdrplay-api >/dev/null 2>&1 || true
+  sleep 10
+fi
+
 # Trunk Recorder runs in the background so the wrapper can publish a
 # liveness heartbeat: the control plane's verify check and decoder status
 # read this file to distinguish "process alive" from "config present".
 CALLS_DIR="${TRUNKSCOPE_CALLS_PATH:-/var/lib/trunkscope/calls}"
-touch "$CALLS_DIR/.decoder-health"
+rm -f "$CALLS_DIR/.decoder-health"
 
 trunk-recorder --config="$CONFIG" &
 TR_PID=$!
+
+if kill -0 "$TR_PID" 2>/dev/null; then
+  touch "$CALLS_DIR/.decoder-health"
+fi
 
 while kill -0 "$TR_PID" 2>/dev/null; do
   sleep 10
   touch "$CALLS_DIR/.decoder-health"
 done
 
+rm -f "$CALLS_DIR/.decoder-health"
 wait "$TR_PID"
