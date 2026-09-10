@@ -1,0 +1,4 @@
+# Stable permissions and power policy for the SDRplay RSP1B.
+# Install on the Unraid host at /boot/config/rules.d/ and copy it to
+# /etc/udev/rules.d/ from /boot/config/go on each boot.
+SUBSYSTEM=="usb", ATTR{idVendor}=="1df7", ATTR{idProduct}=="3050", MODE="0660", GROUP="users", SYMLINK+="rsp1b", ATTR{power/control}="on"

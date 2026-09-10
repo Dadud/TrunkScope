@@ -110,7 +110,10 @@ pub fn ingest_status_payload(state: &AppState, payload: &str) -> bool {
             true
         }
         Err(cause) => {
-            warn!(%cause, "ignored invalid decoder sidecar");
+            // Keep enough context to diagnose upload-script 400s without
+            // logging the full sidecar (which may contain operator metadata).
+            let preview: String = payload.chars().take(180).collect();
+            warn!(%cause, payload_len = payload.len(), payload_preview = %preview, "ignored invalid decoder sidecar");
             false
         }
     }

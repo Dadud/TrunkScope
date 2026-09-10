@@ -36,6 +36,23 @@ AI setup: [docs/ai-providers.md](../../docs/ai-providers.md)
 3. Pass USB to container.
 4. Set `TRUNKSCOPE_RADIO_DEVICE=soapy=0,driver=sdrplay`.
 
+For long-running RSP1B operation, install `99-trunkscope-rsp1b.rules` on the
+Unraid host in `/boot/config/rules.d/`, then load it at boot from
+`/boot/config/go`:
+
+```sh
+mkdir -p /etc/udev/rules.d
+cp /boot/config/rules.d/99-trunkscope-rsp1b.rules /etc/udev/rules.d/
+udevadm control --reload-rules
+udevadm trigger --subsystem-match=usb
+```
+
+The rule disables runtime USB autosuspend for the RSP1B and provides a stable
+`/dev/rsp1b` identity. Connect it directly to a dedicated motherboard port,
+avoid a hub shared with storage devices, and ensure no other container or VM
+has the SDR assigned. If the controller still resets, add
+`usbcore.autosuspend=-1` to the Unraid syslinux boot append line.
+
 ### Build on Unraid
 
 ```bash

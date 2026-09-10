@@ -128,6 +128,21 @@ async fn process_with_retry(
         sleep(wait).await;
     }
 
+    // Trunk Recorder can publish the sidecar before the WAV has been flushed
+    // (and a stalled decoder can leave a stale metadata row behind). Do not
+    // send a missing path into the provider retry loop; wait briefly for the
+    // finalized asset, then leave the call archived for an explicit retry.
+    for _ in 0..20 {
+        if path.is_file() {
+            break;
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+    if !path.is_file() {
+        warn!(path = %path.display(), "audio asset is unavailable; skipping transcription");
+        return;
+    }
+
     let mut settings = state
         .settings
         .read()

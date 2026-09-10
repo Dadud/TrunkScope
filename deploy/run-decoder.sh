@@ -22,15 +22,20 @@ if [ ! -f "$CONFIG" ]; then
   echo "decoder config not yet written at $CONFIG"
 fi
 
-# The SDRplay vendor service can retain libusb handles after a decoder exit.
-# Reset it before opening the device so a new Trunk Recorder instance never
-# races a stale API session (the source otherwise dies with submit_iso_transfer
-# errno=12 or reports no available RSP devices).
+# Do not stop/restart the SDRplay API here.  The vendor service owns the
+# libusb handle and SoapySDRPlay documents hangs/crashes when it is restarted
+# while a client is opening or closing a stream.  supervisord owns its
+# lifecycle; decoder startup must never create a second API session.
 if grep -q 'driver=sdrplay' "$CONFIG" 2>/dev/null && command -v supervisorctl >/dev/null 2>&1; then
-  supervisorctl stop sdrplay-api >/dev/null 2>&1 || true
-  sleep 1
-  supervisorctl start sdrplay-api >/dev/null 2>&1 || true
-  sleep 10
+  j=0
+  while [ "$j" -lt 30 ]; do
+    status="$(supervisorctl status sdrplay-api 2>/dev/null || true)"
+    case "$status" in
+      *RUNNING*) break ;;
+    esac
+    j=$((j + 1))
+    sleep 1
+  done
 fi
 
 # Trunk Recorder runs in the background so the wrapper can publish a
