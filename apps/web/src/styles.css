@@ -1693,6 +1693,10 @@ button, input, select, textarea {
 .enrichment-status.failed { color:#fca5a5; }
 .enrichment-meta { display:block; color:var(--text-dim); font-size:12px; margin:3px 0 5px; }
 .enrichment-result { margin:3px 0; color:var(--text); }
+.enrichment-list-field { margin:6px 0; }
+.enrichment-list-field strong { font-size:12px; color:var(--text-dim); }
+.enrichment-list-field ul { margin:3px 0 0 18px; padding:0; }
+.enrichment-list-field li { margin:2px 0; }
 .ai-enrichment-list blockquote { margin:6px 0; padding:6px 10px; border-left:2px solid var(--accent); color:var(--text-dim); font-size:12px; }
 .ai-enrichment-list pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; color:var(--text-dim); }
 .enrichment-task-heading button { max-width: 100%; white-space: normal; }
@@ -2016,3 +2020,12 @@ button, input, select, textarea {
 .enrichment-task-editor label { display:flex; flex-direction:column; gap:6px; margin:12px 0; }
 .enrichment-task-editor input, .enrichment-task-editor textarea, .enrichment-task-editor select { width:100%; min-width:0; box-sizing:border-box; }
 .enrichment-task-editor summary { cursor:pointer; padding:12px 0; }
+.incident-feed { position: absolute; right: 1rem; top: 1rem; width: min(340px, calc(100vw - 2rem)); max-height: calc(100% - 2rem); overflow: auto; z-index: 4; color: #e6edf7; }
+.incident-feed-header { display:flex; justify-content:space-between; padding:.55rem .75rem; background:#0d1827e8; border:1px solid #2d425c; font-size:.7rem; letter-spacing:.12em; }
+.incident-card { display:block; width:100%; text-align:left; padding:.7rem .75rem; margin-top:.35rem; background:#101b2ae8; border:1px solid #2d425c; color:inherit; cursor:pointer; }
+.incident-card:hover, .incident-card:focus-visible { border-color:#18b9ee; background:#15263a; }
+.incident-card-top { display:flex; justify-content:space-between; font-size:.72rem; text-transform:uppercase; }
+.confidence-badge { font-size:.62rem; padding:.12rem .35rem; border-radius:3px; background:#475569; }
+.confidence-badge.confirmed { background:#166534; }.confidence-badge.provisional { background:#92400e; }.confidence-badge.candidate { background:#374151; }
+.incident-headline { margin-top:.3rem; font-size:.9rem; line-height:1.25; }.incident-location,.incident-meta { margin-top:.3rem; color:#9fb0c5; font-size:.72rem; }.incident-feed-empty { padding:.8rem; background:#0d1827e8; border:1px solid #2d425c; }
+@media (max-width: 700px) { .incident-feed { position:relative; right:auto; top:auto; width:auto; max-height: none; margin:.75rem; } }

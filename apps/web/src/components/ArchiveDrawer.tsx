@@ -23,6 +23,16 @@ function enrichmentResult(item: Record<string, unknown>) {
     .filter(([key, value]) => !ignored.has(key) && (typeof value === "string" || typeof value === "number" || typeof value === "boolean"))
     .map(([key, value]) => `${key.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())}: ${String(value)}`);
 }
+
+function enrichmentLists(item: Record<string, unknown>) {
+  const source = item.parsed && typeof item.parsed === "object" ? item.parsed as Record<string, unknown> : item;
+  return Object.entries(source).filter(([key, value]) =>
+    !["evidence"].includes(key) && Array.isArray(value) && value.length > 0,
+  ).map(([key, value]) => ({
+    label: key.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+    values: value.map((entry) => typeof entry === "string" ? entry : JSON.stringify(entry)),
+  }));
+}
 import { callAudioUrl, purgeCalls, undoPurgeCalls, retryCallEnrichment } from "../api";
 
 interface ArchiveDrawerProps {
@@ -218,6 +228,7 @@ export function ArchiveDrawer({ isOpen, onClose, calls, onSelectCall }: ArchiveD
                           <div className="enrichment-row-title"><strong>{enrichmentTaskLabel(task)}</strong><span className={`enrichment-status ${String(item.status ?? "recorded")}`}>{String(item.status ?? "recorded")}</span></div>
                           <span className="enrichment-meta">Confidence {typeof item.confidence === "number" ? item.confidence.toFixed(2) : "not reported"}{typeof item.model === "string" && ` · ${item.model}`}</span>
                           {enrichmentResult(item).map((result) => <p className="enrichment-result" key={result}>{result}</p>)}
+                          {enrichmentLists(item).map((list) => <div className="enrichment-list-field" key={list.label}><strong>{list.label}</strong><ul>{list.values.map((entry) => <li key={entry}>{entry}</li>)}</ul></div>)}
                           {typeof item.error === "string" && <p role="alert">{item.error}{typeof item.detail === "string" ? `: ${item.detail}` : ""}</p>}
                           {typeof item.reason === "string" && <p>{item.reason}</p>}
                           {typeof item.raw === "string" && <details><summary>Provider response</summary><pre>{item.raw}</pre></details>}

@@ -6,6 +6,7 @@ import {
   getSession,
   getSettings,
   getSnapshot,
+  getIncidents,
   login,
   logout,
   saveSettings,
@@ -14,11 +15,13 @@ import {
   type AppSettings,
   type Diagnostics,
   type RuntimeStatus,
+  type IncidentView,
 } from "./api";
 import type { Call, Receiver, Snapshot } from "./types";
 import { Header } from "./components/Header";
 import { MapConsole } from "./components/MapConsole";
 import { LiveFeedHUD } from "./components/LiveFeedHUD";
+import { IncidentFeed } from "./components/IncidentFeed";
 import { OperationsDrawer } from "./components/OperationsDrawer";
 import { TalkgroupDrawer } from "./components/TalkgroupDrawer";
 import { ArchiveDrawer } from "./components/ArchiveDrawer";
@@ -46,6 +49,7 @@ export default function App() {
   const [selectedCall, setSelectedCall] = useState<Call | undefined>();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("all");
+  const [incidents, setIncidents] = useState<IncidentView[]>([]);
 
   // Audio State
   const [volume, setVolume] = useState(0.75);
@@ -107,6 +111,7 @@ export default function App() {
         setData(snapshot);
         setConnectionError("");
       }).catch(() => setConnectionError("Appliance connection lost. Displayed calls may be stale; reconnecting…"));
+      getIncidents().then(setIncidents).catch(() => undefined);
     };
     refresh();
     const timer = window.setInterval(refresh, 5000);
@@ -283,6 +288,10 @@ export default function App() {
           onOpenTalkgroup={handleOpenTalkgroup}
           onOpenOperations={() => setActiveDrawer("operations")}
         />
+        <IncidentFeed incidents={incidents} onSelectCall={(id) => {
+          const call = data.calls.find((item) => item.id === id);
+          if (call) setSelectedCall(call);
+        }} />
       </main>
 
       <MobileNav active={activeDrawer} onOpen={setActiveDrawer} />

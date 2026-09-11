@@ -81,6 +81,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/calls/purge", post(purge_calls))
         .route("/api/v1/calls/purge/undo", post(undo_purge_calls))
         .route("/api/v1/calls", get(calls))
+        .route("/api/v1/incidents", get(incidents))
         .route("/api/v1/operations/ask", post(operations_ask))
         .route("/api/call-upload", post(rdio_call_upload))
         .route("/api/v1/operations/summary", get(operations_summary))
@@ -1697,6 +1698,44 @@ async fn calls(
             .cloned()
             .collect(),
     )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IncidentView {
+    id: String,
+    category: String,
+    headline: String,
+    first_seen: chrono::DateTime<chrono::Utc>,
+    last_seen: chrono::DateTime<chrono::Utc>,
+    call_ids: Vec<uuid::Uuid>,
+    location: Option<trunkscope_domain::IncidentLocation>,
+    confidence_state: String,
+    confidence: Option<f32>,
+    units: Vec<String>,
+}
+
+/// Operator-facing incident projection. Calls remain the source of truth;
+/// this view groups nearby-in-time calls by category and normalized location.
+async fn incidents(State(state): State<Arc<AppState>>) -> Json<Vec<IncidentView>> {
+    let calls = state.calls.read().expect("calls lock poisoned").clone();
+    let mut groups: std::collections::HashMap<String, IncidentView> = std::collections::HashMap::new();
+    for call in calls.into_iter().filter(|c| c.state == trunkscope_domain::CallState::Complete) {
+        let location_key = call.location.as_ref().map(|l| format!("{:.3}:{:.3}", l.latitude, l.longitude)).unwrap_or_else(|| "none".into());
+        let key = format!("{}:{}", call.category.to_ascii_lowercase(), location_key);
+        let entry = groups.entry(key).or_insert_with(|| IncidentView {
+            id: call.id.to_string(), category: call.category.clone(), headline: call.talkgroup_label.clone(),
+            first_seen: call.started_at, last_seen: call.ended_at.unwrap_or(call.started_at), call_ids: Vec::new(),
+            location: call.location.clone(), confidence_state: call.location.as_ref().map(|l| if l.confidence >= 0.8 { "confirmed" } else if l.confidence >= 0.5 { "provisional" } else { "candidate" }).unwrap_or("unlocated").into(),
+            confidence: call.location.as_ref().map(|l| l.confidence), units: Vec::new(),
+        });
+        entry.first_seen = entry.first_seen.min(call.started_at); entry.last_seen = entry.last_seen.max(call.ended_at.unwrap_or(call.started_at));
+        entry.call_ids.push(call.id);
+        if let Some(value) = call.enrichment.get("unit-extraction").and_then(|v| v.get("parsed")).and_then(|v| v.get("units")).and_then(|v| v.as_array()) {
+            for unit in value.iter().filter_map(|v| v.as_str()) { if !entry.units.iter().any(|u| u == unit) { entry.units.push(unit.into()); } }
+        }
+    }
+    let mut result: Vec<_> = groups.into_values().collect(); result.sort_by(|a,b| b.last_seen.cmp(&a.last_seen)); Json(result)
 }
 
 #[derive(Serialize)]
