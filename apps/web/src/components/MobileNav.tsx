@@ -1,11 +1,12 @@
 interface MobileNavProps {
-  active: "operations" | "talkgroups" | "archive" | "appliance" | "settings" | null;
-  onOpen: (drawer: "archive" | "appliance" | "settings" | null) => void;
+  active: "operations" | "talkgroups" | "archive" | "appliance" | "settings" | "incidents" | null;
+  onOpen: (drawer: "archive" | "appliance" | "settings" | "incidents" | null) => void;
 }
 
 export function MobileNav({ active, onOpen }: MobileNavProps) {
   const items = [
     { id: null, label: "Listen", icon: "⌂" },
+    { id: "incidents" as const, label: "Incidents", icon: "⚠" },
     { id: "archive" as const, label: "Recordings", icon: "▣" },
     { id: "appliance" as const, label: "Radio Setup", icon: "◉" },
     { id: "settings" as const, label: "Settings", icon: "⚙" },

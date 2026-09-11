@@ -2029,3 +2029,4 @@ button, input, select, textarea {
 .confidence-badge.confirmed { background:#166534; }.confidence-badge.provisional { background:#92400e; }.confidence-badge.candidate { background:#374151; }
 .incident-headline { margin-top:.3rem; font-size:.9rem; line-height:1.25; }.incident-location,.incident-meta { margin-top:.3rem; color:#9fb0c5; font-size:.72rem; }.incident-feed-empty { padding:.8rem; background:#0d1827e8; border:1px solid #2d425c; }
 @media (max-width: 700px) { .incident-feed { position:relative; right:auto; top:auto; width:auto; max-height: none; margin:.75rem; } }
+.incident-drawer-row { display:flex; flex-direction:column; gap:.2rem; width:100%; text-align:left; padding:.8rem; margin:.4rem 0; background:#101b2a; border:1px solid #2d425c; color:inherit; cursor:pointer; }.incident-drawer-row:hover { border-color:#18b9ee; }.incident-drawer-row span,.incident-drawer-row small { color:#9fb0c5; }

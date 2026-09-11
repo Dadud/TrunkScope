@@ -22,6 +22,7 @@ import { Header } from "./components/Header";
 import { MapConsole } from "./components/MapConsole";
 import { LiveFeedHUD } from "./components/LiveFeedHUD";
 import { IncidentFeed } from "./components/IncidentFeed";
+import { IncidentDrawer } from "./components/IncidentDrawer";
 import { OperationsDrawer } from "./components/OperationsDrawer";
 import { TalkgroupDrawer } from "./components/TalkgroupDrawer";
 import { ArchiveDrawer } from "./components/ArchiveDrawer";
@@ -72,7 +73,7 @@ export default function App() {
   const [session, setSession] = useState<{ username: string; role: string } | undefined>();
 
   // Drawers
-  const [activeDrawer, setActiveDrawer] = useState<"operations" | "talkgroups" | "archive" | "appliance" | "settings" | null>(null);
+  const [activeDrawer, setActiveDrawer] = useState<"operations" | "talkgroups" | "archive" | "appliance" | "settings" | "incidents" | null>(null);
   const [inspectedTalkgroupId, setInspectedTalkgroupId] = useState<number | undefined>();
 
   // Initial Auth Check
@@ -295,6 +296,8 @@ export default function App() {
       </main>
 
       <MobileNav active={activeDrawer} onOpen={setActiveDrawer} />
+
+      <IncidentDrawer isOpen={activeDrawer === "incidents"} incidents={incidents} onClose={() => setActiveDrawer(null)} onSelectCall={(id) => { const call = data.calls.find((item) => item.id === id); if (call) { setSelectedCall(call); setActiveDrawer(null); } }} />
 
       {/* Drawers */}
       <OperationsDrawer
