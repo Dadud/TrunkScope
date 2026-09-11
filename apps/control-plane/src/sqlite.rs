@@ -27,7 +27,9 @@ pub fn init(path: &Path) -> rusqlite::Result<()> {
             started_at TEXT NOT NULL,
             ended_at TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_calls_started_at ON calls(started_at DESC);",
+        CREATE INDEX IF NOT EXISTS idx_calls_started_at ON calls(started_at DESC);
+        CREATE TABLE IF NOT EXISTS incidents (id TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_incidents_last_seen ON incidents(last_seen DESC);",
     )?;
     Ok(())
 }
@@ -72,6 +74,16 @@ pub fn hydrate(state: &Arc<AppState>) {
     while calls.len() > crate::state::MAX_RECENT_CALLS {
         calls.pop_front();
     }
+}
+
+pub fn upsert_incident(id: &str, payload: &str, first_seen: &str, last_seen: &str) {
+    let path = db_path();
+    if init(&path).is_err() { return; }
+    let Ok(connection) = Connection::open(path) else { return; };
+    let _ = connection.execute(
+        "INSERT INTO incidents (id, payload, first_seen, last_seen, updated_at) VALUES (?1, ?2, ?3, ?4, datetime('now')) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, first_seen=excluded.first_seen, last_seen=excluded.last_seen, updated_at=excluded.updated_at",
+        params![id, payload, first_seen, last_seen],
+    );
 }
 
 pub fn upsert_call(call: &Call) {

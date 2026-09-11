@@ -1739,7 +1739,13 @@ async fn incidents(State(state): State<Arc<AppState>>) -> Json<Vec<IncidentView>
             for unit in value.iter().filter_map(|v| v.as_str()) { if !entry.units.iter().any(|u| u == unit) { entry.units.push(unit.into()); } }
         }
     }
-    let mut result: Vec<_> = groups.into_values().collect(); result.sort_by(|a,b| b.last_seen.cmp(&a.last_seen)); Json(result)
+    let mut result: Vec<_> = groups.into_values().collect(); result.sort_by(|a,b| b.last_seen.cmp(&a.last_seen));
+    for item in &result {
+        if let Ok(payload) = serde_json::to_string(item) {
+            crate::sqlite::upsert_incident(&item.id, &payload, &item.first_seen.to_rfc3339(), &item.last_seen.to_rfc3339());
+        }
+    }
+    Json(result)
 }
 
 async fn incident_detail(
