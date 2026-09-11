@@ -82,7 +82,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/calls/purge/undo", post(undo_purge_calls))
         .route("/api/v1/calls", get(calls))
         .route("/api/v1/incidents", get(incidents))
-        .route("/api/v1/incidents/:id", get(incident_detail))
+        .route("/api/v1/incidents/{id}", get(incident_detail))
         .route("/api/v1/operations/ask", post(operations_ask))
         .route("/api/call-upload", post(rdio_call_upload))
         .route("/api/v1/operations/summary", get(operations_summary))
