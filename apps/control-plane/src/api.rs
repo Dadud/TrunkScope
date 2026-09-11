@@ -1723,7 +1723,10 @@ async fn incidents(State(state): State<Arc<AppState>>) -> Json<Vec<IncidentView>
     let mut groups: std::collections::HashMap<String, IncidentView> = std::collections::HashMap::new();
     for call in calls.into_iter().filter(|c| c.state == trunkscope_domain::CallState::Complete) {
         let location_key = call.location.as_ref().map(|l| format!("{:.3}:{:.3}", l.latitude, l.longitude)).unwrap_or_else(|| "none".into());
-        let key = format!("{}:{}", call.category.to_ascii_lowercase(), location_key);
+        // Unlocated traffic is only correlated within a short time window;
+        // otherwise every unrelated call would appear as one giant incident.
+        let time_bucket = if location_key == "none" { call.started_at.timestamp() / 1800 } else { 0 };
+        let key = format!("{}:{}:{}", call.category.to_ascii_lowercase(), location_key, time_bucket);
         let entry = groups.entry(key).or_insert_with(|| IncidentView {
             id: call.id.to_string(), category: call.category.clone(), headline: call.talkgroup_label.clone(),
             first_seen: call.started_at, last_seen: call.ended_at.unwrap_or(call.started_at), call_ids: Vec::new(),
