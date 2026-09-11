@@ -82,6 +82,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/calls/purge/undo", post(undo_purge_calls))
         .route("/api/v1/calls", get(calls))
         .route("/api/v1/incidents", get(incidents))
+        .route("/api/v1/incidents/:id", get(incident_detail))
         .route("/api/v1/operations/ask", post(operations_ask))
         .route("/api/call-upload", post(rdio_call_upload))
         .route("/api/v1/operations/summary", get(operations_summary))
@@ -1736,6 +1737,15 @@ async fn incidents(State(state): State<Arc<AppState>>) -> Json<Vec<IncidentView>
         }
     }
     let mut result: Vec<_> = groups.into_values().collect(); result.sort_by(|a,b| b.last_seen.cmp(&a.last_seen)); Json(result)
+}
+
+async fn incident_detail(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<IncidentView>, StatusCode> {
+    let items = incidents(State(state)).await.0;
+    items.into_iter().find(|item| item.id == id || item.call_ids.iter().any(|call_id| call_id.to_string() == id))
+        .map(Json).ok_or(StatusCode::NOT_FOUND)
 }
 
 #[derive(Serialize)]
